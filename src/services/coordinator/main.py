@@ -315,7 +315,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(
                 chat_id,
                 f'Task {task.id[:8]} needs approval for destructive action. Approve?',
-                buttons,
+                reply_markup=buttons,
             )
             await db.commit()
             return

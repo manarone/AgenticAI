@@ -61,7 +61,7 @@ services:
     command: ["sh", "-c", "python scripts/init_db.py && uvicorn services.coordinator.main:app --host 0.0.0.0 --port 8000"]
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       TASK_STREAM: ${TASK_STREAM:-agentai:tasks}
       RESULT_STREAM: ${RESULT_STREAM:-agentai:results}
@@ -111,7 +111,7 @@ services:
     command: ["uvicorn", "services.executor.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       TASK_STREAM: ${TASK_STREAM:-agentai:tasks}
       RESULT_STREAM: ${RESULT_STREAM:-agentai:results}
@@ -136,7 +136,7 @@ services:
     command: ["uvicorn", "services.admin.main:app", "--host", "0.0.0.0", "--port", "8002"]
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-local-admin}
       BUS_BACKEND: redis

@@ -59,5 +59,7 @@ class ExecutorJobLauncher:
     @staticmethod
     def _build_job_name(task_id: str) -> str:
         digest = hashlib.sha1(task_id.encode('utf-8')).hexdigest()[:8]
-        prefix = re.sub(r'[^a-z0-9-]', '-', ExecutorJobLauncher._sanitize_label(task_id).replace('_', '-'))[:45]
+        prefix = re.sub(r'[^a-z0-9-]', '-', ExecutorJobLauncher._sanitize_label(task_id).replace('_', '-'))[:45].strip('-')
+        if not prefix:
+            prefix = 'task'
         return f'executor-{prefix}-{digest}'[:63].rstrip('-')

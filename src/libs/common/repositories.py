@@ -270,10 +270,15 @@ class CoreRepository:
                         TokenUsageDaily.model == model,
                         TokenUsageDaily.usage_date == usage_date,
                     )
-                ).with_for_update()
+                )
             )
         ).scalar_one_or_none()
         if existing:
+            existing = (
+                await self.db.execute(
+                    select(TokenUsageDaily).where(TokenUsageDaily.id == existing.id).with_for_update()
+                )
+            ).scalar_one()
             existing.input_tokens += input_tokens
             existing.output_tokens += output_tokens
             await self.db.flush()
