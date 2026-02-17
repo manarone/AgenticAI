@@ -39,6 +39,7 @@ def test_mem0_local_fastembed_does_not_require_openai_key(monkeypatch):
     Mem0LocalMemoryStore()
 
     assert _DummyMemoryClass.last_config['embedder']['provider'] == 'fastembed'
+    assert 'api_key' not in _DummyMemoryClass.last_config['llm']['config']
 
 
 def test_mem0_local_openai_embedder_requires_openai_key(monkeypatch):
@@ -49,3 +50,14 @@ def test_mem0_local_openai_embedder_requires_openai_key(monkeypatch):
 
     with pytest.raises(ValueError, match='MEM0_EMBEDDER_PROVIDER=openai'):
         Mem0LocalMemoryStore()
+
+
+def test_mem0_local_openai_embedder_uses_openai_key_when_set(monkeypatch):
+    _install_mem0_stub(monkeypatch)
+    monkeypatch.setenv('MEM0_EMBEDDER_PROVIDER', 'openai')
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    get_settings.cache_clear()
+
+    Mem0LocalMemoryStore()
+
+    assert _DummyMemoryClass.last_config['llm']['config']['api_key'] == 'test-key'

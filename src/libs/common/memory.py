@@ -107,6 +107,13 @@ class Mem0LocalMemoryStore:
                 'Supported: openai, fastembed.'
             )
 
+        llm_config: dict[str, Any] = {
+            'openai_base_url': settings.openai_base_url,
+            'model': settings.mem0_llm_model,
+        }
+        if settings.openai_api_key:
+            llm_config['api_key'] = settings.openai_api_key
+
         config: dict[str, Any] = {
             'vector_store': {
                 'provider': 'qdrant',
@@ -119,11 +126,7 @@ class Mem0LocalMemoryStore:
             },
             'llm': {
                 'provider': 'openai',
-                'config': {
-                    'api_key': settings.openai_api_key,
-                    'openai_base_url': settings.openai_base_url,
-                    'model': settings.mem0_llm_model,
-                },
+                'config': llm_config,
             },
             'embedder': {
                 'provider': embedder_provider,
