@@ -76,6 +76,44 @@ async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | N
         await telegram.send_message(chat_id=chat_id, text=chunk)
 
 
+@asynccontextmanager
+async def _typing_indicator(chat_id: str):
+    min_visible_seconds = 0.9
+    stop_event = asyncio.Event()
+    first_pulse_sent = asyncio.Event()
+    started_at = asyncio.get_running_loop().time()
+
+    async def _pulse() -> None:
+        while not stop_event.is_set():
+            try:
+                await telegram.send_chat_action(chat_id=chat_id, action='typing')
+            except Exception:
+                logger.exception('Failed to send typing indicator chat_id=%s', chat_id)
+            finally:
+                if not first_pulse_sent.is_set():
+                    first_pulse_sent.set()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except TimeoutError:
+                continue
+
+    task = asyncio.create_task(_pulse())
+    try:
+        await asyncio.wait_for(first_pulse_sent.wait(), timeout=1.0)
+    except TimeoutError:
+        logger.warning('Typing indicator first pulse timed out chat_id=%s', chat_id)
+    try:
+        yield
+    finally:
+        elapsed = asyncio.get_running_loop().time() - started_at
+        if elapsed < min_visible_seconds:
+            await asyncio.sleep(min_visible_seconds - elapsed)
+        stop_event.set()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 def _format_recent_conversation(messages, max_chars_per_message: int = 500) -> list[str]:
     formatted: list[str] = []
     for msg in messages:
@@ -245,137 +283,138 @@ async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identit
 
 async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
     with REQUEST_LATENCY.labels(service='coordinator', endpoint='telegram_webhook').time():
-        convo = await repo.get_or_create_conversation(identity.tenant_id, identity.user_id)
-        sanitized, flagged, patterns = sanitize_input(text)
-        await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'user', text)
-        await append_audit(
-            db,
-            tenant_id=identity.tenant_id,
-            user_id=identity.user_id,
-            actor='coordinator',
-            action='message_received',
-            details={'flagged': flagged, 'patterns': patterns},
-        )
-
-        if flagged:
-            await db.commit()
-            await _send_telegram_message(chat_id, 'Input blocked due to suspected prompt injection.')
-            return
-
-        try:
-            await memory.remember(identity.tenant_id, identity.user_id, sanitized)
-        except Exception as exc:
+        async with _typing_indicator(chat_id):
+            convo = await repo.get_or_create_conversation(identity.tenant_id, identity.user_id)
+            sanitized, flagged, patterns = sanitize_input(text)
+            await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'user', text)
             await append_audit(
                 db,
                 tenant_id=identity.tenant_id,
                 user_id=identity.user_id,
                 actor='coordinator',
-                action='memory_remember_failed',
-                details={'error': str(exc)},
+                action='message_received',
+                details={'flagged': flagged, 'patterns': patterns},
             )
-        task_type, payload = _parse_task(sanitized)
-        risk = classify_risk(sanitized)
 
-        if task_type is None:
+            if flagged:
+                await db.commit()
+                await _send_telegram_message(chat_id, 'Input blocked due to suspected prompt injection.')
+                return
+
             try:
-                recalled = await memory.recall(identity.tenant_id, identity.user_id, query=sanitized)
+                await memory.remember(identity.tenant_id, identity.user_id, sanitized)
             except Exception as exc:
-                recalled = []
                 await append_audit(
                     db,
                     tenant_id=identity.tenant_id,
                     user_id=identity.user_id,
                     actor='coordinator',
-                    action='memory_recall_failed',
+                    action='memory_remember_failed',
                     details={'error': str(exc)},
                 )
+            task_type, payload = _parse_task(sanitized)
+            risk = classify_risk(sanitized)
 
-            try:
-                recent_messages = await repo.list_conversation_messages(convo.id, limit=30)
-            except Exception as exc:
-                recent_messages = []
-                await append_audit(
-                    db,
-                    tenant_id=identity.tenant_id,
-                    user_id=identity.user_id,
-                    actor='coordinator',
-                    action='conversation_context_failed',
-                    details={'error': str(exc)},
+            if task_type is None:
+                try:
+                    recalled = await memory.recall(identity.tenant_id, identity.user_id, query=sanitized)
+                except Exception as exc:
+                    recalled = []
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='memory_recall_failed',
+                        details={'error': str(exc)},
+                    )
+
+                try:
+                    recent_messages = await repo.list_conversation_messages(convo.id, limit=30)
+                except Exception as exc:
+                    recent_messages = []
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='conversation_context_failed',
+                        details={'error': str(exc)},
+                    )
+
+                context_blocks: list[str] = []
+                recent_context = _format_recent_conversation(recent_messages)
+                if recent_context:
+                    context_blocks.append('Recent conversation:\n' + '\n'.join(recent_context))
+                if recalled:
+                    context_blocks.append('Long-term memory:\n' + '\n'.join(recalled))
+
+                response, input_tokens, output_tokens = await llm.chat(
+                    system_prompt='You are the AgentAI coordinator. Keep responses concise and useful.',
+                    user_prompt=sanitized,
+                    memory=context_blocks,
                 )
+                await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'assistant', response)
+                await repo.increment_token_usage(identity.tenant_id, settings.openai_model, input_tokens, output_tokens)
+                TOKEN_COUNTER.labels(tenant_id=identity.tenant_id, model=settings.openai_model).inc(input_tokens + output_tokens)
+                await db.commit()
+                await _send_telegram_message(chat_id, response)
+                return
 
-            context_blocks: list[str] = []
-            recent_context = _format_recent_conversation(recent_messages)
-            if recent_context:
-                context_blocks.append('Recent conversation:\n' + '\n'.join(recent_context))
-            if recalled:
-                context_blocks.append('Long-term memory:\n' + '\n'.join(recalled))
-
-            response, input_tokens, output_tokens = await llm.chat(
-                system_prompt='You are the AgentAI coordinator. Keep responses concise and useful.',
-                user_prompt=sanitized,
-                memory=context_blocks,
+            status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
+            task = await repo.create_task(
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+                conversation_id=convo.id,
+                task_type=task_type.value,
+                risk_tier=risk.value,
+                payload=payload,
+                status=status,
             )
-            await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'assistant', response)
-            await repo.increment_token_usage(identity.tenant_id, settings.openai_model, input_tokens, output_tokens)
-            TOKEN_COUNTER.labels(tenant_id=identity.tenant_id, model=settings.openai_model).inc(input_tokens + output_tokens)
-            await db.commit()
-            await _send_telegram_message(chat_id, response)
-            return
 
-        status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
-        task = await repo.create_task(
-            tenant_id=identity.tenant_id,
-            user_id=identity.user_id,
-            conversation_id=convo.id,
-            task_type=task_type.value,
-            risk_tier=risk.value,
-            payload=payload,
-            status=status,
-        )
-
-        approval_id: str | None = None
-        if status == TaskStatus.WAITING_APPROVAL:
-            approval = await repo.create_approval(task.id, identity.tenant_id, identity.user_id)
-            approval_id = approval.id
-            buttons = {
-                'inline_keyboard': [
-                    [
-                        {'text': 'Approve', 'callback_data': f'approve:{approval.id}'},
-                        {'text': 'Deny', 'callback_data': f'deny:{approval.id}'},
+            approval_id: str | None = None
+            if status == TaskStatus.WAITING_APPROVAL:
+                approval = await repo.create_approval(task.id, identity.tenant_id, identity.user_id)
+                approval_id = approval.id
+                buttons = {
+                    'inline_keyboard': [
+                        [
+                            {'text': 'Approve', 'callback_data': f'approve:{approval.id}'},
+                            {'text': 'Deny', 'callback_data': f'deny:{approval.id}'},
+                        ]
                     ]
-                ]
-            }
-            await _send_telegram_message(
-                chat_id,
-                f'Task {task.id[:8]} needs approval for destructive action. Approve?',
-                reply_markup=buttons,
+                }
+                await _send_telegram_message(
+                    chat_id,
+                    f'Task {task.id[:8]} needs approval for destructive action. Approve?',
+                    reply_markup=buttons,
+                )
+                await db.commit()
+                return
+
+            envelope = TaskEnvelope(
+                task_id=UUID(task.id),
+                tenant_id=UUID(identity.tenant_id),
+                user_id=UUID(identity.user_id),
+                task_type=task_type,
+                payload=payload,
+                risk_tier=risk,
+                approval_id=UUID(approval_id) if approval_id else None,
+                created_at=datetime.utcnow(),
+            )
+            await bus.publish_task(envelope)
+            _maybe_launch_executor_job(task.id)
+
+            await append_audit(
+                db,
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+                actor='coordinator',
+                action='task_enqueued',
+                details={'task_id': task.id, 'task_type': task_type.value, 'risk_tier': risk.value},
             )
             await db.commit()
-            return
-
-        envelope = TaskEnvelope(
-            task_id=UUID(task.id),
-            tenant_id=UUID(identity.tenant_id),
-            user_id=UUID(identity.user_id),
-            task_type=task_type,
-            payload=payload,
-            risk_tier=risk,
-            approval_id=UUID(approval_id) if approval_id else None,
-            created_at=datetime.utcnow(),
-        )
-        await bus.publish_task(envelope)
-        _maybe_launch_executor_job(task.id)
-
-        await append_audit(
-            db,
-            tenant_id=identity.tenant_id,
-            user_id=identity.user_id,
-            actor='coordinator',
-            action='task_enqueued',
-            details={'task_id': task.id, 'task_type': task_type.value, 'risk_tier': risk.value},
-        )
-        await db.commit()
-        await _send_telegram_message(chat_id, f'Task queued: {task.id}')
+            await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
 @app.post('/telegram/webhook')
