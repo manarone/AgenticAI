@@ -53,7 +53,7 @@ class ExecutorJobLauncher:
     @staticmethod
     def _sanitize_label(task_id: str) -> str:
         lowered = task_id.lower()
-        cleaned = _LABEL_SAFE_RE.sub('-', lowered).strip('-.')
+        cleaned = _LABEL_SAFE_RE.sub('-', lowered).strip('-._')
         return (cleaned or 'unknown')[:63]
 
     @staticmethod

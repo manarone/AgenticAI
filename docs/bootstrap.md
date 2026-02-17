@@ -30,6 +30,8 @@ kubectl -n agentai apply -f kubernetes-stack/base/secret.example.yaml
 kubectl apply -k kubernetes-stack/overlays/dev
 ```
 
+Note: coordinator state persistence uses `coordinator-data-pvc` with `ReadWriteOnce` in MVP, so run coordinator as a single replica unless you switch to `ReadWriteMany` storage.
+
 ## 3) Initialize Database
 Run once from any app pod:
 ```bash

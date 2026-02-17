@@ -99,12 +99,12 @@ class CoreRepository:
             user_id=user.id,
             telegram_user_id=telegram_user_id,
         )
-        self.db.add(identity)
-        invite.used = True
         try:
-            await self.db.flush()
+            async with self.db.begin_nested():
+                self.db.add(identity)
+                invite.used = True
+                await self.db.flush()
         except IntegrityError:
-            await self.db.rollback()
             return False, 'Telegram account already linked.'
         return True, user.id
 
@@ -301,7 +301,7 @@ class CoreRepository:
                     and_(
                         TokenUsageDaily.tenant_id == tenant_id,
                         TokenUsageDaily.model == model,
-                        TokenUsageDaily.usage_date == usage_date,
+                        func.date(TokenUsageDaily.usage_date) == usage_date.date(),
                     )
                 ).with_for_update()
             )
