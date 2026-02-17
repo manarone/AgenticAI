@@ -1,4 +1,4 @@
-.PHONY: init-db test run-coordinator run-executor run-admin
+.PHONY: init-db test run-coordinator run-executor run-admin docker-up docker-down
 
 init-db:
 	python3 scripts/init_db.py

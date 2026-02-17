@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
 import frontmatter
@@ -9,6 +11,9 @@ from minio.error import S3Error
 
 from libs.common.config import get_settings
 from libs.common.schemas import SkillManifest
+
+logger = logging.getLogger(__name__)
+_SKILL_NAME_RE = re.compile(r'^[A-Za-z0-9._-]+$')
 
 
 class SkillStore:
@@ -28,10 +33,17 @@ class SkillStore:
                 self.minio.make_bucket(self.settings.minio_bucket)
         except S3Error:
             # MinIO may not be reachable in local/dev; local fallback still works.
-            pass
+            logger.exception('Failed to ensure MinIO bucket %s', self.settings.minio_bucket)
 
     def load_local_skill(self, skill_name: str) -> tuple[SkillManifest, str]:
-        path = self.local_dir / f'{skill_name}.md'
+        normalized = skill_name.strip()
+        if not normalized or '..' in normalized or not _SKILL_NAME_RE.fullmatch(normalized):
+            raise ValueError('Invalid skill name')
+
+        path = (self.local_dir / f'{normalized}.md').resolve()
+        root = self.local_dir.resolve()
+        if root not in path.parents:
+            raise ValueError('Skill path escapes local skill directory')
         if not path.exists():
             raise FileNotFoundError(f'Skill {skill_name} not found at {path}')
 

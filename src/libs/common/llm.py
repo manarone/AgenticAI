@@ -32,6 +32,25 @@ class LLMClient:
             resp.raise_for_status()
             data = resp.json()
 
-        content = data['choices'][0]['message']['content']
+        content = self._extract_content(data)
         usage = data.get('usage', {})
         return content, int(usage.get('prompt_tokens', 0)), int(usage.get('completion_tokens', 0))
+
+    @staticmethod
+    def _extract_content(data: dict) -> str:
+        choices = data.get('choices')
+        if not isinstance(choices, list) or not choices:
+            return 'Model response was empty.'
+
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get('message', {})
+        if isinstance(message, dict):
+            content = message.get('content')
+            if isinstance(content, str) and content.strip():
+                return content
+
+        text = first.get('text')
+        if isinstance(text, str) and text.strip():
+            return text
+
+        return 'Model response was empty.'

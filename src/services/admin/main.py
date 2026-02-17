@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from libs.common.auth import require_admin_token
@@ -46,7 +47,7 @@ async def metrics():
 async def home(
     _: None = Depends(require_admin_token),
     db=Depends(get_db),
-):
+) -> HTMLResponse:
     repo = CoreRepository(db)
     users = await repo.list_users()
     tasks = await repo.list_tasks(limit=10)
@@ -59,7 +60,7 @@ async def home(
         f'<p>Token usage rows: {len(usage)}</p>',
         '</body></html>',
     ]
-    return ''.join(html)
+    return HTMLResponse(''.join(html))
 
 
 @app.post('/admin/invite-codes', dependencies=[Depends(require_admin_token)])

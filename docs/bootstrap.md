@@ -12,15 +12,25 @@ Create `agentai-secrets` from `kubernetes-stack/base/secret.example.yaml` and se
 - `TELEGRAM_BOT_TOKEN`
 - `OPENAI_API_KEY`
 - `ADMIN_TOKEN`
+- `DATABASE_URL`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
 - `MINIO_ACCESS_KEY`
 - `MINIO_SECRET_KEY`
 
 Optional (only for cloud mem0 mode): `MEM0_API_KEY`
 
+Example:
+```bash
+kubectl -n agentai apply -f kubernetes-stack/base/secret.example.yaml
+```
+
 ## 2) Deploy
 ```bash
 kubectl apply -k kubernetes-stack/overlays/dev
 ```
+
+Note: coordinator state persistence uses `coordinator-data-pvc` with `ReadWriteOnce` in MVP, so run coordinator as a single replica unless you switch to `ReadWriteMany` storage.
 
 ## 3) Initialize Database
 Run once from any app pod:
@@ -51,3 +61,9 @@ From Telegram:
 ## 7) Configure Webhook
 Point Telegram webhook to:
 `POST /telegram/webhook` on coordinator service.
+
+Example:
+```bash
+curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -d "url=https://<public-coordinator-host>/telegram/webhook"
+```

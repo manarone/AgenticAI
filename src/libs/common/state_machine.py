@@ -11,7 +11,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.TIMED_OUT,
         TaskStatus.WAITING_APPROVAL,
     },
-    TaskStatus.WAITING_APPROVAL: {TaskStatus.RUNNING, TaskStatus.CANCELED, TaskStatus.FAILED},
+    TaskStatus.WAITING_APPROVAL: {TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.CANCELED, TaskStatus.FAILED},
     TaskStatus.SUCCEEDED: set(),
     TaskStatus.FAILED: set(),
     TaskStatus.CANCELED: set(),

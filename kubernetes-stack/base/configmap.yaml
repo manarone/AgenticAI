@@ -4,7 +4,6 @@ metadata:
   name: agentai-config
 data:
   APP_ENV: "prod"
-  DATABASE_URL: "postgresql+asyncpg://agentai:agentai@postgres:5432/agentai"
   REDIS_URL: "redis://redis:6379/0"
   TASK_STREAM: "agentai:tasks"
   RESULT_STREAM: "agentai:results"
@@ -22,9 +21,9 @@ data:
   MEM0_EMBEDDING_MODEL: "text-embedding-3-small"
   MEM0_EMBEDDING_DIMS: "1536"
   MEM0_LLM_MODEL: "openrouter/minimax/minimax-m2.5"
-  MEM0_HISTORY_DB_PATH: "/tmp/mem0-history.db"
+  MEM0_HISTORY_DB_PATH: "/data/mem0-history.db"
   K8S_NAMESPACE: "agentai"
-  K8S_EXECUTOR_IMAGE: "ghcr.io/example/agentai-executor:latest"
+  K8S_EXECUTOR_IMAGE: "ghcr.io/example/agentai-executor:v0.1.0"
   LAUNCH_EXECUTOR_JOB: "true"
   SKILL_LOCAL_DIR: "/app/src/skills/starter"
   MINIO_ENDPOINT: "minio:9000"

@@ -107,9 +107,12 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE TABLE IF NOT EXISTS token_usage_daily (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-  usage_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+  usage_date DATE NOT NULL DEFAULT CURRENT_DATE,
   model TEXT NOT NULL,
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_token_usage_tenant_model_date
+  ON token_usage_daily (tenant_id, model, usage_date);

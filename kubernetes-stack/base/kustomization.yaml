@@ -4,7 +4,6 @@ namespace: agentai
 resources:
   - namespace.yaml
   - configmap.yaml
-  - secret.example.yaml
   - networkpolicy.yaml
   - postgres.yaml
   - redis.yaml

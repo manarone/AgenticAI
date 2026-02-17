@@ -2,21 +2,31 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: agentai
-      POSTGRES_USER: agentai
-      POSTGRES_PASSWORD: agentai
+      POSTGRES_DB: ${POSTGRES_DB:-agentai}
+      POSTGRES_USER: ${POSTGRES_USER:-agentai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentai}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -28,7 +38,7 @@ services:
       - minio_data:/data
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.15.3
     ports:
       - "6333:6333"
       - "6334:6334"
@@ -40,21 +50,31 @@ services:
       context: .
       dockerfile: Dockerfile
     depends_on:
-      - postgres
-      - redis
-      - minio
-      - qdrant
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
     command: ["sh", "-c", "python scripts/init_db.py && uvicorn services.coordinator.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2).read()"]
+      start_period: 20s
+      interval: 5s
+      timeout: 5s
+      retries: 20
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql+asyncpg://agentai:agentai@postgres:5432/agentai
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       TASK_STREAM: ${TASK_STREAM:-agentai:tasks}
       RESULT_STREAM: ${RESULT_STREAM:-agentai:results}
       CANCEL_STREAM: ${CANCEL_STREAM:-agentai:cancels}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       OPENAI_MODEL: ${OPENAI_MODEL:-openrouter/minimax/minimax-m2.5}
       OPENAI_FALLBACK_MODEL: ${OPENAI_FALLBACK_MODEL:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-local-admin}
@@ -76,24 +96,28 @@ services:
       MEM0_EMBEDDING_MODEL: ${MEM0_EMBEDDING_MODEL:-text-embedding-3-small}
       MEM0_EMBEDDING_DIMS: ${MEM0_EMBEDDING_DIMS:-1536}
       MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-openrouter/minimax/minimax-m2.5}
-      MEM0_HISTORY_DB_PATH: ${MEM0_HISTORY_DB_PATH:-/tmp/mem0-history.db}
+      MEM0_HISTORY_DB_PATH: ${MEM0_HISTORY_DB_PATH:-/app/data/mem0-history.db}
       LAUNCH_EXECUTOR_JOB: "false"
       MAX_EXECUTOR_RETRIES: ${MAX_EXECUTOR_RETRIES:-2}
       TASK_TIMEOUT_SECONDS: ${TASK_TIMEOUT_SECONDS:-120}
     ports:
       - "8000:8000"
+    volumes:
+      - agentai_data:/app/data
 
   executor:
     build:
       context: .
       dockerfile: Dockerfile
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["uvicorn", "services.executor.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql+asyncpg://agentai:agentai@postgres:5432/agentai
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       TASK_STREAM: ${TASK_STREAM:-agentai:tasks}
       RESULT_STREAM: ${RESULT_STREAM:-agentai:results}
@@ -111,12 +135,14 @@ services:
       context: .
       dockerfile: Dockerfile
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["uvicorn", "services.admin.main:app", "--host", "0.0.0.0", "--port", "8002"]
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql+asyncpg://agentai:agentai@postgres:5432/agentai
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
       REDIS_URL: redis://redis:6379/0
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-local-admin}
       BUS_BACKEND: redis
@@ -129,13 +155,15 @@ services:
       context: .
       dockerfile: Dockerfile
     depends_on:
-      - coordinator
+      coordinator:
+        condition: service_healthy
     command: ["python", "scripts/telegram_polling_bridge.py"]
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       COORDINATOR_WEBHOOK_URL: http://coordinator:8000/telegram/webhook
 
 volumes:
   postgres_data:
   minio_data:
   qdrant_data:
+  agentai_data:

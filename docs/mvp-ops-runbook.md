@@ -22,16 +22,16 @@
 - Validate bot token secret.
 - Check `/start <invite_code>` was completed.
 
-### 2b) Memory not retained
+### 3) Memory not retained
 - Ensure `MEMORY_BACKEND=mem0_local` in config map/env.
 - Confirm Qdrant is healthy and reachable at `MEM0_QDRANT_HOST:MEM0_QDRANT_PORT`.
 - Check coordinator logs for mem0 client errors.
 
-### 3) Approval callbacks fail
+### 4) Approval callbacks fail
 - Ensure callback data format `approve:<approval_id>` / `deny:<approval_id>`.
 - Confirm identity is mapped in `telegram_identities`.
 
-### 4) High token usage
+### 5) High token usage
 - Query `/admin/token-usage`.
 - Adjust model config from MiniMax default if needed.
 - Add stricter prompt limits and summarize old context.

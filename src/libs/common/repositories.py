@@ -4,6 +4,7 @@ from datetime import datetime
 from secrets import token_urlsafe
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.common.enums import ApprovalDecision, TaskStatus
@@ -68,7 +69,7 @@ class CoreRepository:
 
     async def redeem_invite_code(self, code: str, telegram_user_id: str) -> tuple[bool, str | None]:
         invite = (
-            await self.db.execute(select(InviteCode).where(InviteCode.code == code).limit(1))
+            await self.db.execute(select(InviteCode).where(InviteCode.code == code).with_for_update().limit(1))
         ).scalar_one_or_none()
         if not invite:
             return False, 'Invite code not found.'
@@ -98,9 +99,13 @@ class CoreRepository:
             user_id=user.id,
             telegram_user_id=telegram_user_id,
         )
-        self.db.add(identity)
-        invite.used = True
-        await self.db.flush()
+        try:
+            async with self.db.begin_nested():
+                self.db.add(identity)
+                invite.used = True
+                await self.db.flush()
+        except IntegrityError:
+            return False, 'Telegram account already linked.'
         return True, user.id
 
     async def get_identity(self, telegram_user_id: str) -> TelegramIdentity | None:
@@ -188,13 +193,11 @@ class CoreRepository:
         await self.db.flush()
         return task
 
-    async def list_user_tasks(self, tenant_id: str, user_id: str) -> list[Task]:
-        result = await self.db.execute(
-            select(Task)
-            .where(and_(Task.tenant_id == tenant_id, Task.user_id == user_id))
-            .order_by(Task.created_at.desc())
-            .limit(20)
-        )
+    async def list_user_tasks(self, tenant_id: str, user_id: str, limit: int | None = 20) -> list[Task]:
+        stmt = select(Task).where(and_(Task.tenant_id == tenant_id, Task.user_id == user_id)).order_by(Task.created_at.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     async def list_tasks(self, limit: int = 100) -> list[Task]:
@@ -221,7 +224,7 @@ class CoreRepository:
         return await self.update_task_status(task.id, TaskStatus.CANCELED)
 
     async def cancel_user_tasks(self, tenant_id: str, user_id: str) -> list[str]:
-        tasks = await self.list_user_tasks(tenant_id=tenant_id, user_id=user_id)
+        tasks = await self.list_user_tasks(tenant_id=tenant_id, user_id=user_id, limit=None)
         canceled: list[str] = []
         for task in tasks:
             if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED, TaskStatus.TIMED_OUT}:
@@ -258,32 +261,67 @@ class CoreRepository:
         return log
 
     async def increment_token_usage(self, tenant_id: str, model: str, input_tokens: int, output_tokens: int) -> None:
-        usage_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        usage_date = datetime.utcnow().date()
         existing = (
             await self.db.execute(
                 select(TokenUsageDaily).where(
                     and_(
                         TokenUsageDaily.tenant_id == tenant_id,
                         TokenUsageDaily.model == model,
-                        func.date(TokenUsageDaily.usage_date) == usage_date.date(),
+                        TokenUsageDaily.usage_date == usage_date,
                     )
                 )
             )
         ).scalar_one_or_none()
         if existing:
+            locked_existing = (
+                await self.db.execute(
+                    select(TokenUsageDaily).where(TokenUsageDaily.id == existing.id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if locked_existing:
+                locked_existing.input_tokens += input_tokens
+                locked_existing.output_tokens += output_tokens
+                await self.db.flush()
+                return
+            raise RuntimeError(
+                f'Token usage row disappeared while locking: tenant={tenant_id} model={model} date={usage_date}'
+            )
+
+        try:
+            async with self.db.begin_nested():
+                self.db.add(
+                    TokenUsageDaily(
+                        tenant_id=tenant_id,
+                        model=model,
+                        usage_date=usage_date,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+                )
+                await self.db.flush()
+                return
+        except IntegrityError:
+            pass
+
+        existing = (
+            await self.db.execute(
+                select(TokenUsageDaily).where(
+                    and_(
+                        TokenUsageDaily.tenant_id == tenant_id,
+                        TokenUsageDaily.model == model,
+                        TokenUsageDaily.usage_date == usage_date,
+                    )
+                ).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if existing:
             existing.input_tokens += input_tokens
             existing.output_tokens += output_tokens
-        else:
-            self.db.add(
-                TokenUsageDaily(
-                    tenant_id=tenant_id,
-                    model=model,
-                    usage_date=usage_date,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                )
-            )
-        await self.db.flush()
+            await self.db.flush()
+            return
+
+        raise RuntimeError(f'Failed to upsert token usage row for tenant={tenant_id} model={model} date={usage_date}')
 
     async def get_token_usage_summary(self) -> list[dict]:
         result = await self.db.execute(

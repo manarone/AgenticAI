@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Protocol
 
 from libs.common.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryBackend(Protocol):
@@ -77,6 +81,11 @@ class Mem0LocalMemoryStore:
 
         from mem0 import Memory
 
+        history_path = Path(settings.mem0_history_db_path).expanduser()
+        if not history_path.is_absolute():
+            history_path = Path.cwd() / history_path
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+
         config: dict[str, Any] = {
             'vector_store': {
                 'provider': 'qdrant',
@@ -104,7 +113,7 @@ class Mem0LocalMemoryStore:
                     'embedding_dims': settings.mem0_embedding_dims,
                 },
             },
-            'history_db_path': settings.mem0_history_db_path,
+            'history_db_path': str(history_path),
             'version': 'v1.1',
         }
 
@@ -166,6 +175,7 @@ def get_memory_backend() -> MemoryBackend:
             _MEMORY_BACKEND = LocalMemoryStore()
     except Exception:
         # Keep service available even if external memory backend is misconfigured.
+        logger.exception('Failed to initialize memory backend %s, falling back to local', backend)
         _MEMORY_BACKEND = LocalMemoryStore()
 
     return _MEMORY_BACKEND

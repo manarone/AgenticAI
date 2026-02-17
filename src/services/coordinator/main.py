@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from uuid import UUID
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from libs.common.audit import append_audit
 from libs.common.config import get_settings
 from libs.common.db import AsyncSessionLocal, get_db
-from libs.common.enums import ApprovalDecision, TaskStatus, TaskType
+from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
 from libs.common.k8s import ExecutorJobLauncher
 from libs.common.llm import LLMClient
 from libs.common.memory import get_memory_backend
@@ -31,6 +32,9 @@ memory = get_memory_backend()
 llm = LLMClient()
 bus = get_task_bus()
 job_launcher = ExecutorJobLauncher()
+logger = logging.getLogger(__name__)
+
+MAX_TELEGRAM_MESSAGE_LEN = 3900
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -40,7 +44,36 @@ def _maybe_launch_executor_job(task_id: str) -> None:
         job_launcher.create_job(task_id)
     except Exception:
         # Executor deployment mode still processes stream messages, so do not fail request path.
+        logger.exception('Failed to launch executor job for task %s', task_id)
         return
+
+
+def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> list[str]:
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_len:
+            chunks.append(remaining)
+            break
+
+        split_at = remaining.rfind('\n', 0, max_len)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip('\n')
+    return chunks
+
+
+async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
+    if reply_markup is not None:
+        await telegram.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        return
+
+    for chunk in _chunk_telegram_text(text):
+        await telegram.send_message(chat_id=chat_id, text=chunk)
 
 
 async def _consume_results_forever() -> None:
@@ -70,7 +103,7 @@ async def _consume_results_forever() -> None:
                         await repo.add_message(task.tenant_id, task.user_id, task.conversation_id, 'assistant', result.output)
                         identity = await repo.get_identity_by_user_id(task.user_id)
                         if identity:
-                            await telegram.send_message(
+                            await _send_telegram_message(
                                 chat_id=identity.telegram_user_id,
                                 text=f'Task `{task.id}` {next_status.value.lower()}:\n{result.output}',
                             )
@@ -85,6 +118,7 @@ async def _consume_results_forever() -> None:
                     await db.commit()
                     await bus.ack_result(message_id)
         except Exception:
+            logger.exception('Result consumer loop failure')
             await asyncio.sleep(1.5)
 
 
@@ -147,15 +181,15 @@ async def _handle_start_command(
 ) -> None:
     parts = text.split(maxsplit=1)
     if len(parts) != 2:
-        await telegram.send_message(chat_id, 'Usage: /start <invite_code>')
+        await _send_telegram_message(chat_id, 'Usage: /start <invite_code>')
         return
     code = parts[1].strip()
     ok, detail = await repo.redeem_invite_code(code, telegram_user_id)
     await db.commit()
     if ok:
-        await telegram.send_message(chat_id, 'Invite code accepted. You are now registered.')
+        await _send_telegram_message(chat_id, 'Invite code accepted. You are now registered.')
     else:
-        await telegram.send_message(chat_id, f'Invite failed: {detail}')
+        await _send_telegram_message(chat_id, f'Invite failed: {detail}')
 
 
 async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, text: str) -> None:
@@ -163,18 +197,18 @@ async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, t
     if len(parts) == 2:
         task = await repo.get_task(parts[1].strip())
         if not task:
-            await telegram.send_message(chat_id, 'Task not found.')
+            await _send_telegram_message(chat_id, 'Task not found.')
             return
-        await telegram.send_message(chat_id, f'Task {task.id}: {task.status.value}')
+        await _send_telegram_message(chat_id, f'Task {task.id}: {task.status.value}')
         return
 
     tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id)
     if not tasks:
-        await telegram.send_message(chat_id, 'No tasks yet.')
+        await _send_telegram_message(chat_id, 'No tasks yet.')
         return
 
     lines = [f"{t.id[:8]} | {t.status.value} | {t.task_type}" for t in tasks[:10]]
-    await telegram.send_message(chat_id, 'Recent tasks:\n' + '\n'.join(lines))
+    await _send_telegram_message(chat_id, 'Recent tasks:\n' + '\n'.join(lines))
 
 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
@@ -184,7 +218,7 @@ async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identit
         for task_id in task_ids:
             await bus.publish_cancel(task_id)
         await db.commit()
-        await telegram.send_message(chat_id, f'Canceled {len(task_ids)} task(s).')
+        await _send_telegram_message(chat_id, f'Canceled {len(task_ids)} task(s).')
         return
 
     task_id = parts[1].strip()
@@ -192,9 +226,9 @@ async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identit
     if task:
         await bus.publish_cancel(task_id)
         await db.commit()
-        await telegram.send_message(chat_id, f'Task {task_id} canceled.')
+        await _send_telegram_message(chat_id, f'Task {task_id} canceled.')
     else:
-        await telegram.send_message(chat_id, 'Task not found.')
+        await _send_telegram_message(chat_id, 'Task not found.')
 
 
 async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
@@ -213,7 +247,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
 
         if flagged:
             await db.commit()
-            await telegram.send_message(chat_id, 'Input blocked due to suspected prompt injection.')
+            await _send_telegram_message(chat_id, 'Input blocked due to suspected prompt injection.')
             return
 
         try:
@@ -252,7 +286,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await repo.increment_token_usage(identity.tenant_id, settings.openai_model, input_tokens, output_tokens)
             TOKEN_COUNTER.labels(tenant_id=identity.tenant_id, model=settings.openai_model).inc(input_tokens + output_tokens)
             await db.commit()
-            await telegram.send_message(chat_id, response)
+            await _send_telegram_message(chat_id, response)
             return
 
         status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
@@ -278,7 +312,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     ]
                 ]
             }
-            await telegram.send_message(
+            await _send_telegram_message(
                 chat_id,
                 f'Task {task.id[:8]} needs approval for destructive action. Approve?',
                 reply_markup=buttons,
@@ -308,7 +342,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             details={'task_id': task.id, 'task_type': task_type.value, 'risk_tier': risk.value},
         )
         await db.commit()
-        await telegram.send_message(chat_id, f'Task queued: {task.id}')
+        await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
 @app.post('/telegram/webhook')
@@ -342,22 +376,26 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
             await bus.publish_cancel(task.id)
-            await telegram.send_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
+            await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
             await repo.update_task_status(task.id, TaskStatus.QUEUED)
+            try:
+                risk_tier = RiskTier(task.risk_tier)
+            except ValueError:
+                risk_tier = classify_risk(str(task.payload))
             envelope = TaskEnvelope(
                 task_id=UUID(task.id),
                 tenant_id=UUID(task.tenant_id),
                 user_id=UUID(task.user_id),
                 task_type=TaskType(task.task_type),
                 payload=task.payload,
-                risk_tier=classify_risk(str(task.payload)),
+                risk_tier=risk_tier,
                 approval_id=UUID(approval.id),
                 created_at=datetime.utcnow(),
             )
             await bus.publish_task(envelope)
             _maybe_launch_executor_job(task.id)
-            await telegram.send_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+            await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
 
         await append_audit(
             db,
@@ -385,7 +423,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
 
     identity = await repo.get_identity(telegram_user_id)
     if identity is None:
-        await telegram.send_message(chat_id, 'This bot is private. Use /start <invite_code> first.')
+        await _send_telegram_message(chat_id, 'This bot is private. Use /start <invite_code> first.')
         return {'ok': True}
 
     if text.startswith('/status'):
