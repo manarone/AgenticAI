@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY scripts ./scripts
+COPY migrations ./migrations
 
 RUN pip install --upgrade pip && pip install .
 

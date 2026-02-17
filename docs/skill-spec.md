@@ -33,6 +33,7 @@ Summarize timesheet records.
 
 ## Execution Rules
 - Manifest validates before execution.
-- L3 risk or destructive actions require approval.
+- Destructive actions listed in `requires_approval_actions[]` always require explicit approval.
+- `risk_tier` should reflect blast radius: `L1` read-only/low impact, `L2` bounded writes, `L3` destructive or irreversible.
 - Permissions are enforced before any file/network operation.
 - Skills should be idempotent where possible.

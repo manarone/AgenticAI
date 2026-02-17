@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 async def run() -> None:
@@ -33,11 +36,13 @@ async def run() -> None:
 
                 for update in payload.get('result', []):
                     update_id = int(update.get('update_id', 0))
+
+                    webhook_response = await client.post(coordinator_webhook_url, json=update)
+                    webhook_response.raise_for_status()
                     if update_id:
                         offset = update_id + 1
-
-                    await client.post(coordinator_webhook_url, json=update)
             except Exception:
+                logger.exception('telegram polling bridge loop failed')
                 await asyncio.sleep(2)
 
 

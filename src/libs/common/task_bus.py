@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from redis.asyncio import Redis
+from redis.exceptions import ResponseError
 
 from libs.common.config import get_settings
 from libs.common.schemas import TaskEnvelope, TaskResult
@@ -32,8 +33,10 @@ class RedisTaskBus:
     async def ensure_consumer_group(self, stream: str) -> None:
         try:
             await self.redis.xgroup_create(stream, self.group, id='0', mkstream=True)
-        except Exception:
-            pass
+        except ResponseError as exc:
+            # Ignore idempotent "group already exists" failures.
+            if 'BUSYGROUP' not in str(exc):
+                raise
 
     async def read_tasks(self, consumer_name: str, count: int = 10, block_ms: int = 1000) -> list[tuple[str, TaskEnvelope]]:
         await self.ensure_consumer_group(self.task_stream)
@@ -146,6 +149,7 @@ class InMemoryTaskBus:
 
 
 _INMEMORY_BUS: InMemoryTaskBus | None = None
+_REDIS_BUS: RedisTaskBus | None = None
 
 
 def get_task_bus():
@@ -155,9 +159,13 @@ def get_task_bus():
         if _INMEMORY_BUS is None:
             _INMEMORY_BUS = InMemoryTaskBus()
         return _INMEMORY_BUS
-    return RedisTaskBus()
+    global _REDIS_BUS
+    if _REDIS_BUS is None:
+        _REDIS_BUS = RedisTaskBus()
+    return _REDIS_BUS
 
 
 def reset_inmemory_bus() -> None:
-    global _INMEMORY_BUS
+    global _INMEMORY_BUS, _REDIS_BUS
     _INMEMORY_BUS = None
+    _REDIS_BUS = None

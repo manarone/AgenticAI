@@ -44,10 +44,10 @@ class Settings(BaseSettings):
     mem0_embedding_model: str = Field(default='text-embedding-3-small', alias='MEM0_EMBEDDING_MODEL')
     mem0_embedding_dims: int = Field(default=1536, alias='MEM0_EMBEDDING_DIMS')
     mem0_llm_model: str = Field(default='openrouter/minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
-    mem0_history_db_path: str = Field(default='/tmp/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
+    mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
     k8s_namespace: str = Field(default='agentai', alias='K8S_NAMESPACE')
-    k8s_executor_image: str = Field(default='agentai-executor:latest', alias='K8S_EXECUTOR_IMAGE')
+    k8s_executor_image: str = Field(default='agentai-executor:v0.1.0', alias='K8S_EXECUTOR_IMAGE')
     launch_executor_job: bool = Field(default=False, alias='LAUNCH_EXECUTOR_JOB')
 
     max_executor_retries: int = Field(default=2, alias='MAX_EXECUTOR_RETRIES')

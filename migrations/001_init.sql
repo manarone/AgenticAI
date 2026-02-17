@@ -113,3 +113,6 @@ CREATE TABLE IF NOT EXISTS token_usage_daily (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_token_usage_tenant_model_date
+  ON token_usage_daily (tenant_id, model, usage_date);

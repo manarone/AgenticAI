@@ -11,6 +11,5 @@ __pycache__
 .env
 .env.*
 tests
-migrations
 docs
 kubernetes-stack

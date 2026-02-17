@@ -99,7 +99,7 @@ class TaskEvent(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey('tasks.id', ondelete='CASCADE'), index=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='CASCADE'), index=True)
     status: Mapped[str] = mapped_column(String(32))
-    details: Mapped[dict] = mapped_column(JSON, default={})
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -124,7 +124,7 @@ class AuditLog(Base):
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     actor: Mapped[str] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(128))
-    details: Mapped[dict] = mapped_column(JSON, default={})
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -142,6 +142,7 @@ class Skill(Base):
 
 class TokenUsageDaily(Base):
     __tablename__ = 'token_usage_daily'
+    __table_args__ = (UniqueConstraint('tenant_id', 'model', 'usage_date', name='uq_token_usage_tenant_model_date'),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
     tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id', ondelete='CASCADE'), index=True)

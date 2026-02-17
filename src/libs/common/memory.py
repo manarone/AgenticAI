@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from typing import Any, Protocol
 
 from libs.common.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryBackend(Protocol):
@@ -166,6 +169,7 @@ def get_memory_backend() -> MemoryBackend:
             _MEMORY_BACKEND = LocalMemoryStore()
     except Exception:
         # Keep service available even if external memory backend is misconfigured.
+        logger.exception('Failed to initialize memory backend %s, falling back to local', backend)
         _MEMORY_BACKEND = LocalMemoryStore()
 
     return _MEMORY_BACKEND
