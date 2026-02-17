@@ -75,7 +75,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
-      OPENAI_MODEL: ${OPENAI_MODEL:-openrouter/minimax/minimax-m2.5}
+      OPENAI_MODEL: ${OPENAI_MODEL:-minimax/minimax-m2.5}
       OPENAI_FALLBACK_MODEL: ${OPENAI_FALLBACK_MODEL:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me-local-admin}
       MINIO_ENDPOINT: minio:9000
@@ -92,10 +92,11 @@ services:
       MEM0_USER_PREFIX: ${MEM0_USER_PREFIX:-agentai}
       MEM0_QDRANT_HOST: ${MEM0_QDRANT_HOST:-qdrant}
       MEM0_QDRANT_PORT: ${MEM0_QDRANT_PORT:-6333}
-      MEM0_QDRANT_COLLECTION: ${MEM0_QDRANT_COLLECTION:-agentai-mem0}
-      MEM0_EMBEDDING_MODEL: ${MEM0_EMBEDDING_MODEL:-text-embedding-3-small}
-      MEM0_EMBEDDING_DIMS: ${MEM0_EMBEDDING_DIMS:-1536}
-      MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-openrouter/minimax/minimax-m2.5}
+      MEM0_QDRANT_COLLECTION: ${MEM0_QDRANT_COLLECTION:-agentai-mem0-nomic}
+      MEM0_EMBEDDER_PROVIDER: ${MEM0_EMBEDDER_PROVIDER:-fastembed}
+      MEM0_EMBEDDING_MODEL: ${MEM0_EMBEDDING_MODEL:-nomic-ai/nomic-embed-text-v1.5}
+      MEM0_EMBEDDING_DIMS: ${MEM0_EMBEDDING_DIMS:-768}
+      MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-minimax/minimax-m2.5}
       MEM0_HISTORY_DB_PATH: ${MEM0_HISTORY_DB_PATH:-/app/data/mem0-history.db}
       LAUNCH_EXECUTOR_JOB: "false"
       MAX_EXECUTOR_RETRIES: ${MAX_EXECUTOR_RETRIES:-2}

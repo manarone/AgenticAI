@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     openai_base_url: str = Field(default='https://openrouter.ai/api/v1', alias='OPENAI_BASE_URL')
     openai_api_key: str = Field(default='', alias='OPENAI_API_KEY')
-    openai_model: str = Field(default='openrouter/minimax/minimax-m2.5', alias='OPENAI_MODEL')
+    openai_model: str = Field(default='minimax/minimax-m2.5', alias='OPENAI_MODEL')
     openai_fallback_model: str = Field(default='', alias='OPENAI_FALLBACK_MODEL')
 
     admin_token: str = Field(default='change-me', alias='ADMIN_TOKEN')
@@ -40,10 +40,11 @@ class Settings(BaseSettings):
     mem0_user_prefix: str = Field(default='agentai', alias='MEM0_USER_PREFIX')
     mem0_qdrant_host: str = Field(default='localhost', alias='MEM0_QDRANT_HOST')
     mem0_qdrant_port: int = Field(default=6333, alias='MEM0_QDRANT_PORT')
-    mem0_qdrant_collection: str = Field(default='agentai-mem0', alias='MEM0_QDRANT_COLLECTION')
-    mem0_embedding_model: str = Field(default='text-embedding-3-small', alias='MEM0_EMBEDDING_MODEL')
-    mem0_embedding_dims: int = Field(default=1536, alias='MEM0_EMBEDDING_DIMS')
-    mem0_llm_model: str = Field(default='openrouter/minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
+    mem0_qdrant_collection: str = Field(default='agentai-mem0-nomic', alias='MEM0_QDRANT_COLLECTION')
+    mem0_embedder_provider: str = Field(default='fastembed', alias='MEM0_EMBEDDER_PROVIDER')
+    mem0_embedding_model: str = Field(default='nomic-ai/nomic-embed-text-v1.5', alias='MEM0_EMBEDDING_MODEL')
+    mem0_embedding_dims: int = Field(default=768, alias='MEM0_EMBEDDING_DIMS')
+    mem0_llm_model: str = Field(default='minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
     mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
     k8s_namespace: str = Field(default='agentai', alias='K8S_NAMESPACE')
