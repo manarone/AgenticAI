@@ -261,14 +261,14 @@ class CoreRepository:
         return log
 
     async def increment_token_usage(self, tenant_id: str, model: str, input_tokens: int, output_tokens: int) -> None:
-        usage_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        usage_date = datetime.utcnow().date()
         existing = (
             await self.db.execute(
                 select(TokenUsageDaily).where(
                     and_(
                         TokenUsageDaily.tenant_id == tenant_id,
                         TokenUsageDaily.model == model,
-                        func.date(TokenUsageDaily.usage_date) == usage_date.date(),
+                        TokenUsageDaily.usage_date == usage_date,
                     )
                 ).with_for_update()
             )
@@ -301,7 +301,7 @@ class CoreRepository:
                     and_(
                         TokenUsageDaily.tenant_id == tenant_id,
                         TokenUsageDaily.model == model,
-                        func.date(TokenUsageDaily.usage_date) == usage_date.date(),
+                        TokenUsageDaily.usage_date == usage_date,
                     )
                 ).with_for_update()
             )
@@ -309,7 +309,10 @@ class CoreRepository:
         if existing:
             existing.input_tokens += input_tokens
             existing.output_tokens += output_tokens
-        await self.db.flush()
+            await self.db.flush()
+            return
+
+        raise RuntimeError(f'Failed to upsert token usage row for tenant={tenant_id} model={model} date={usage_date}')
 
     async def get_token_usage_summary(self) -> list[dict]:
         result = await self.db.execute(
