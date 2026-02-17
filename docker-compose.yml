@@ -59,6 +59,11 @@ services:
       qdrant:
         condition: service_started
     command: ["sh", "-c", "python scripts/init_db.py && uvicorn services.coordinator.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     environment:
       APP_ENV: ${APP_ENV:-dev}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentai}:${POSTGRES_PASSWORD:-agentai}@postgres:5432/${POSTGRES_DB:-agentai}
@@ -150,7 +155,7 @@ services:
       dockerfile: Dockerfile
     depends_on:
       coordinator:
-        condition: service_started
+        condition: service_healthy
     command: ["python", "scripts/telegram_polling_bridge.py"]
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}

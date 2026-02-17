@@ -78,6 +78,9 @@ class RedisTaskBus:
         # Redis-backed cancellation is source-of-truth in Postgres status for MVP.
         return False
 
+    async def close(self) -> None:
+        await self.redis.aclose()
+
 
 class InMemoryTaskBus:
     def __init__(self) -> None:
@@ -165,7 +168,9 @@ def get_task_bus():
     return _REDIS_BUS
 
 
-def reset_inmemory_bus() -> None:
+async def reset_inmemory_bus() -> None:
     global _INMEMORY_BUS, _REDIS_BUS
     _INMEMORY_BUS = None
+    if _REDIS_BUS is not None:
+        await _REDIS_BUS.close()
     _REDIS_BUS = None

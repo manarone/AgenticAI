@@ -274,15 +274,16 @@ class CoreRepository:
             )
         ).scalar_one_or_none()
         if existing:
-            existing = (
+            locked_existing = (
                 await self.db.execute(
                     select(TokenUsageDaily).where(TokenUsageDaily.id == existing.id).with_for_update()
                 )
-            ).scalar_one()
-            existing.input_tokens += input_tokens
-            existing.output_tokens += output_tokens
-            await self.db.flush()
-            return
+            ).scalar_one_or_none()
+            if locked_existing:
+                locked_existing.input_tokens += input_tokens
+                locked_existing.output_tokens += output_tokens
+                await self.db.flush()
+                return
 
         try:
             async with self.db.begin_nested():

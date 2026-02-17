@@ -22,7 +22,7 @@ async def reset_state():
     from libs.common.task_bus import reset_inmemory_bus
 
     get_settings.cache_clear()
-    reset_inmemory_bus()
+    await reset_inmemory_bus()
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
