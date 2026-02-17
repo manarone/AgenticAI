@@ -114,7 +114,7 @@ def _mutating_reason(command: str) -> str | None:
     if not normalized:
         return 'empty_command'
 
-    if '>' in normalized:
+    if _has_output_redirection(command):
         return 'output_redirection'
 
     for segment in _segments(normalized):
@@ -129,6 +129,18 @@ def _mutating_reason(command: str) -> str | None:
             return f'keyword_{pattern}'
 
     return None
+
+
+def _has_output_redirection(command: str) -> bool:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars='<>|')
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        # Treat parse errors conservatively.
+        return True
+
+    return any(token in {'>', '>>'} for token in tokens)
 
 
 def _blocked_reason(command: str) -> str | None:

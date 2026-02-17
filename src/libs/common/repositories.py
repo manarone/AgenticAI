@@ -323,6 +323,7 @@ class CoreRepository:
                         ApprovalGrant.user_id == user_id,
                         ApprovalGrant.scope == scope,
                         ApprovalGrant.revoked_at.is_(None),
+                        ApprovalGrant.expires_at > now,
                     )
                 )
                 .order_by(ApprovalGrant.updated_at.desc())

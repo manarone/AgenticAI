@@ -22,3 +22,8 @@ def test_hard_block_can_be_overridden_to_approval():
     result = classify_shell_command('rm -rf /', allow_hard_block_override=True)
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
     assert result.reason.startswith('hard_block_overridden_')
+
+
+def test_quoted_redirection_symbol_does_not_trigger_mutation():
+    result = classify_shell_command("grep 'a>b' /tmp/file.txt")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN

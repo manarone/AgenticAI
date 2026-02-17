@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 SHELL_MUTATION_SCOPE = 'shell_mutation'
 logger = logging.getLogger(__name__)
+_REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:-]+$')
 
 
 def _command_hash(command: str) -> str:
@@ -52,6 +54,13 @@ def _shell_env() -> dict[str, str]:
         if value is not None:
             env[name] = value
     return env
+
+
+def _validate_remote_host(remote_host: str) -> None:
+    if not remote_host:
+        raise RuntimeError('Missing remote host.')
+    if remote_host.startswith('-') or not _REMOTE_HOST_RE.fullmatch(remote_host):
+        raise RuntimeError('Invalid remote host.')
 
 
 async def _run_local_shell(command: str) -> str:
@@ -74,10 +83,12 @@ async def _run_local_shell(command: str) -> str:
 
 
 async def _run_remote_shell(remote_host: str, command: str) -> str:
+    _validate_remote_host(remote_host)
     proc = await asyncio.create_subprocess_exec(
         'ssh',
         '-o',
         'BatchMode=yes',
+        '--',
         remote_host,
         command,
         stdout=asyncio.subprocess.PIPE,

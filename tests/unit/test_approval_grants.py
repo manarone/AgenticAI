@@ -48,3 +48,12 @@ async def test_approval_grant_is_tenant_user_scoped_and_expires():
         stored.expires_at = datetime.utcnow() - timedelta(minutes=1)
         await db.flush()
         assert await repo.has_active_approval_grant(tenant.id, user.id, 'shell_mutation') is False
+
+        renewed, refreshed = await repo.issue_approval_grant(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            scope='shell_mutation',
+            ttl_minutes=10,
+        )
+        assert refreshed is False
+        assert renewed.id != grant.id
