@@ -78,14 +78,6 @@ class CoreRepository:
         if invite.expires_at < datetime.utcnow():
             return False, 'Invite code expired.'
 
-        user = (
-            await self.db.execute(select(User).where(User.tenant_id == invite.tenant_id).limit(1))
-        ).scalar_one_or_none()
-        if not user:
-            user = User(tenant_id=invite.tenant_id, display_name=f'tg-{telegram_user_id}')
-            self.db.add(user)
-            await self.db.flush()
-
         existing = (
             await self.db.execute(
                 select(TelegramIdentity).where(TelegramIdentity.telegram_user_id == telegram_user_id).limit(1)
@@ -94,13 +86,16 @@ class CoreRepository:
         if existing:
             return False, 'Telegram account already linked.'
 
-        identity = TelegramIdentity(
-            tenant_id=invite.tenant_id,
-            user_id=user.id,
-            telegram_user_id=telegram_user_id,
-        )
         try:
             async with self.db.begin_nested():
+                user = User(tenant_id=invite.tenant_id, display_name=f'tg-{telegram_user_id}')
+                self.db.add(user)
+                await self.db.flush()
+                identity = TelegramIdentity(
+                    tenant_id=invite.tenant_id,
+                    user_id=user.id,
+                    telegram_user_id=telegram_user_id,
+                )
                 self.db.add(identity)
                 invite.used = True
                 await self.db.flush()
@@ -109,11 +104,32 @@ class CoreRepository:
         return True, user.id
 
     async def get_identity(self, telegram_user_id: str) -> TelegramIdentity | None:
-        return (
+        identity = (
             await self.db.execute(
                 select(TelegramIdentity).where(TelegramIdentity.telegram_user_id == telegram_user_id).limit(1)
             )
         ).scalar_one_or_none()
+        if identity is None:
+            return None
+
+        await self._ensure_identity_user_isolated(identity)
+        return identity
+
+    async def _ensure_identity_user_isolated(self, identity: TelegramIdentity) -> None:
+        # Early data linked multiple Telegram identities to the same user, which mixes chat context.
+        total_for_user = (
+            await self.db.execute(
+                select(func.count(TelegramIdentity.id)).where(TelegramIdentity.user_id == identity.user_id)
+            )
+        ).scalar_one()
+        if int(total_for_user or 0) <= 1:
+            return
+
+        new_user = User(tenant_id=identity.tenant_id, display_name=f'tg-{identity.telegram_user_id}')
+        self.db.add(new_user)
+        await self.db.flush()
+        identity.user_id = new_user.id
+        await self.db.flush()
 
     async def get_identity_by_user_id(self, user_id: str) -> TelegramIdentity | None:
         return (
@@ -147,6 +163,18 @@ class CoreRepository:
         self.db.add(message)
         await self.db.flush()
         return message
+
+    async def list_conversation_messages(self, conversation_id: str, limit: int = 30) -> list[Message]:
+        stmt = (
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        rows = list(result.scalars().all())
+        rows.reverse()
+        return rows
 
     async def create_task(
         self,

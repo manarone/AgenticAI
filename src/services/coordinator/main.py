@@ -76,6 +76,18 @@ async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | N
         await telegram.send_message(chat_id=chat_id, text=chunk)
 
 
+def _format_recent_conversation(messages, max_chars_per_message: int = 500) -> list[str]:
+    formatted: list[str] = []
+    for msg in messages:
+        content = (msg.content or '').strip()
+        if not content:
+            continue
+        if len(content) > max_chars_per_message:
+            content = content[:max_chars_per_message] + '...'
+        formatted.append(f'{msg.role}: {content}')
+    return formatted
+
+
 async def _consume_results_forever() -> None:
     while True:
         try:
@@ -277,10 +289,31 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     action='memory_recall_failed',
                     details={'error': str(exc)},
                 )
+
+            try:
+                recent_messages = await repo.list_conversation_messages(convo.id, limit=30)
+            except Exception as exc:
+                recent_messages = []
+                await append_audit(
+                    db,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    actor='coordinator',
+                    action='conversation_context_failed',
+                    details={'error': str(exc)},
+                )
+
+            context_blocks: list[str] = []
+            recent_context = _format_recent_conversation(recent_messages)
+            if recent_context:
+                context_blocks.append('Recent conversation:\n' + '\n'.join(recent_context))
+            if recalled:
+                context_blocks.append('Long-term memory:\n' + '\n'.join(recalled))
+
             response, input_tokens, output_tokens = await llm.chat(
                 system_prompt='You are the AgentAI coordinator. Keep responses concise and useful.',
                 user_prompt=sanitized,
-                memory=recalled,
+                memory=context_blocks,
             )
             await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'assistant', response)
             await repo.increment_token_usage(identity.tenant_id, settings.openai_model, input_tokens, output_tokens)
