@@ -76,9 +76,6 @@ class Mem0LocalMemoryStore:
         settings = get_settings()
         self.user_prefix = settings.mem0_user_prefix
 
-        if not settings.openai_api_key:
-            raise ValueError('OPENAI_API_KEY is required when MEMORY_BACKEND=mem0_local')
-
         from mem0 import Memory
 
         history_path = Path(settings.mem0_history_db_path).expanduser()
@@ -88,6 +85,11 @@ class Mem0LocalMemoryStore:
 
         embedder_provider = settings.mem0_embedder_provider.lower().strip()
         if embedder_provider == 'openai':
+            if not settings.openai_api_key:
+                raise ValueError(
+                    'OPENAI_API_KEY is required when MEMORY_BACKEND=mem0_local '
+                    'and MEM0_EMBEDDER_PROVIDER=openai'
+                )
             embedder_config: dict[str, Any] = {
                 'api_key': settings.openai_api_key,
                 'openai_base_url': settings.openai_base_url,
