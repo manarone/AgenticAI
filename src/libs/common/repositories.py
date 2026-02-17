@@ -284,6 +284,9 @@ class CoreRepository:
                 locked_existing.output_tokens += output_tokens
                 await self.db.flush()
                 return
+            raise RuntimeError(
+                f'Token usage row disappeared while locking: tenant={tenant_id} model={model} date={usage_date}'
+            )
 
         try:
             async with self.db.begin_nested():
