@@ -23,6 +23,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 # set OPENAI_API_KEY and TELEGRAM_BOT_TOKEN in .env
+# default mem0 embedder is local fastembed + nomic-ai/nomic-embed-text-v1.5
 python3 scripts/init_db.py
 uvicorn services.coordinator.main:app --reload --port 8000
 uvicorn services.executor.main:app --reload --port 8001
@@ -35,6 +36,9 @@ export MEMORY_BACKEND=local
 ```
 
 Cloud mem0 is still supported via `MEMORY_BACKEND=mem0_api` and `MEM0_API_KEY`.
+
+For `MEMORY_BACKEND=mem0_local`, embeddings default to local `fastembed` (`MEM0_EMBEDDER_PROVIDER=fastembed`).
+The first request downloads the embedding model weights and can take ~30-120s depending on network/CPU.
 
 ## Tests
 ```bash

@@ -86,6 +86,25 @@ class Mem0LocalMemoryStore:
             history_path = Path.cwd() / history_path
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
+        embedder_provider = settings.mem0_embedder_provider.lower().strip()
+        if embedder_provider == 'openai':
+            embedder_config: dict[str, Any] = {
+                'api_key': settings.openai_api_key,
+                'openai_base_url': settings.openai_base_url,
+                'model': settings.mem0_embedding_model,
+                'embedding_dims': settings.mem0_embedding_dims,
+            }
+        elif embedder_provider == 'fastembed':
+            # Local embedding path (no remote embedding API call).
+            embedder_config = {
+                'model': settings.mem0_embedding_model,
+            }
+        else:
+            raise ValueError(
+                f'Unsupported MEM0_EMBEDDER_PROVIDER `{settings.mem0_embedder_provider}`. '
+                'Supported: openai, fastembed.'
+            )
+
         config: dict[str, Any] = {
             'vector_store': {
                 'provider': 'qdrant',
@@ -105,13 +124,8 @@ class Mem0LocalMemoryStore:
                 },
             },
             'embedder': {
-                'provider': 'openai',
-                'config': {
-                    'api_key': settings.openai_api_key,
-                    'openai_base_url': settings.openai_base_url,
-                    'model': settings.mem0_embedding_model,
-                    'embedding_dims': settings.mem0_embedding_dims,
-                },
+                'provider': embedder_provider,
+                'config': embedder_config,
             },
             'history_db_path': str(history_path),
             'version': 'v1.1',
