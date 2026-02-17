@@ -53,6 +53,14 @@ class Settings(BaseSettings):
 
     max_executor_retries: int = Field(default=2, alias='MAX_EXECUTOR_RETRIES')
     task_timeout_seconds: int = Field(default=120, alias='TASK_TIMEOUT_SECONDS')
+    shell_policy_mode: str = Field(default='balanced', alias='SHELL_POLICY_MODE')
+    shell_work_dir: str = Field(default='/tmp/agentai', alias='SHELL_WORK_DIR')
+    shell_max_output_chars: int = Field(default=4000, alias='SHELL_MAX_OUTPUT_CHARS')
+    shell_allow_hard_block_override: bool = Field(default=False, alias='SHELL_ALLOW_HARD_BLOCK_OVERRIDE')
+    shell_mutation_grant_ttl_minutes: int = Field(default=10, alias='SHELL_MUTATION_GRANT_TTL_MINUTES')
+    shell_remote_enabled: bool = Field(default=False, alias='SHELL_REMOTE_ENABLED')
+    shell_timeout_seconds: int = Field(default=120, alias='SHELL_TIMEOUT_SECONDS')
+    shell_env_allowlist: str = Field(default='PATH,HOME,LANG,LC_ALL,TERM,TZ', alias='SHELL_ENV_ALLOWLIST')
 
 
 @lru_cache(maxsize=1)

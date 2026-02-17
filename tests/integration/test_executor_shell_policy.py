@@ -1,0 +1,76 @@
+from datetime import datetime
+from uuid import UUID
+
+from libs.common.db import AsyncSessionLocal
+from libs.common.enums import RiskTier, TaskStatus, TaskType
+from libs.common.repositories import CoreRepository
+from libs.common.schemas import TaskEnvelope
+
+
+async def _create_shell_task(command: str, payload_extra: dict | None = None):
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        tenant, user, convo = await repo.get_or_create_default_tenant_user()
+        payload = {'command': command}
+        payload.update(payload_extra or {})
+        task = await repo.create_task(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            conversation_id=convo.id,
+            task_type='shell',
+            risk_tier='L2',
+            payload=payload,
+            status=TaskStatus.QUEUED,
+        )
+        await db.commit()
+    envelope = TaskEnvelope(
+        task_id=UUID(task.id),
+        tenant_id=UUID(tenant.id),
+        user_id=UUID(user.id),
+        task_type=TaskType.SHELL,
+        payload=payload,
+        risk_tier=RiskTier.L2,
+        created_at=datetime.utcnow(),
+    )
+    return task, envelope
+
+
+async def test_executor_allows_readonly_shell():
+    from services.executor.main import _process_task_once, bus
+
+    _, envelope = await _create_shell_task('uname -a')
+
+    await _process_task_once('1-0', envelope)
+    results = await bus.read_results(consumer_name='test-readonly', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is True
+    assert result.output
+
+
+async def test_executor_blocks_hard_blocked_command():
+    from services.executor.main import _process_task_once, bus
+
+    _, envelope = await _create_shell_task('rm -rf /')
+    await _process_task_once('1-0', envelope)
+    await _process_task_once('2-0', envelope)
+
+    results = await bus.read_results(consumer_name='test-blocked', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is False
+    assert 'blocked' in (result.error or '').lower()
+
+
+async def test_executor_remote_shell_disabled_by_default():
+    from services.executor.main import _process_task_once, bus
+
+    _, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': 'example-host'})
+    await _process_task_once('1-0', envelope)
+    await _process_task_once('2-0', envelope)
+
+    results = await bus.read_results(consumer_name='test-remote-disabled', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is False
+    assert 'remote shell execution is disabled' in (result.error or '').lower()

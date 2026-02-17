@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
@@ -16,9 +17,18 @@ from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
 from libs.common.k8s import ExecutorJobLauncher
 from libs.common.llm import LLMClient
 from libs.common.memory import get_memory_backend
-from libs.common.metrics import REQUEST_COUNTER, REQUEST_LATENCY, TOKEN_COUNTER, metrics_response
+from libs.common.metrics import (
+    REQUEST_COUNTER,
+    REQUEST_LATENCY,
+    SHELL_POLICY_ALLOW_COUNTER,
+    SHELL_POLICY_APPROVAL_COUNTER,
+    SHELL_POLICY_BLOCK_COUNTER,
+    TOKEN_COUNTER,
+    metrics_response,
+)
 from libs.common.models import Base
 from libs.common.risk import classify_risk, requires_approval
+from libs.common.shell_policy import ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskEnvelope
 from libs.common.sanitizer import sanitize_input
 from libs.common.state_machine import can_transition
@@ -35,6 +45,7 @@ job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
+SHELL_MUTATION_SCOPE = 'shell_mutation'
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -206,6 +217,13 @@ async def metrics():
 def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     lowered = user_text.lower().strip()
 
+    if lowered.startswith('shell@'):
+        shell_target, _, command = user_text.partition(':')
+        remote_host = shell_target[len('shell@') :].strip()
+        if remote_host and command.strip():
+            return TaskType.SHELL, {'command': command.strip(), 'remote_host': remote_host}
+        return TaskType.SHELL, {'command': command.strip()}
+
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
         skill_name, _, arg = rest.strip().partition(' ')
@@ -263,6 +281,20 @@ async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, t
 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
     parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[1].strip().lower() in {'grant', 'grants'}:
+        revoked = await repo.revoke_approval_grants(identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE)
+        await append_audit(
+            db,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            actor='user',
+            action='approval_grant_revoked',
+            details={'scope': SHELL_MUTATION_SCOPE, 'count': revoked},
+        )
+        await db.commit()
+        await _send_telegram_message(chat_id, f'Revoked {revoked} shell approval grant(s).')
+        return
+
     if len(parts) == 1 or parts[1].strip().lower() == 'all':
         task_ids = await repo.cancel_user_tasks(identity.tenant_id, identity.user_id)
         for task_id in task_ids:
@@ -314,6 +346,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 )
             task_type, payload = _parse_task(sanitized)
             risk = classify_risk(sanitized)
+            shell_requires_approval = False
 
             if task_type is None:
                 try:
@@ -361,7 +394,70 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 await _send_telegram_message(chat_id, response)
                 return
 
-            status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
+            if task_type == TaskType.SHELL:
+                command = payload.get('command', '').strip()
+                command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
+                shell_policy = classify_shell_command(
+                    command,
+                    mode=settings.shell_policy_mode,
+                    allow_hard_block_override=settings.shell_allow_hard_block_override,
+                )
+                payload['policy_decision'] = shell_policy.decision.value
+                payload['policy_reason'] = shell_policy.reason
+
+                await append_audit(
+                    db,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    actor='coordinator',
+                    action='command_classification_decision',
+                    details={
+                        'task_type': 'shell',
+                        'decision': shell_policy.decision.value,
+                        'reason': shell_policy.reason,
+                        'command_hash': command_hash,
+                    },
+                )
+
+                if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
+                    SHELL_POLICY_ALLOW_COUNTER.inc()
+                elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    SHELL_POLICY_APPROVAL_COUNTER.inc()
+                else:
+                    SHELL_POLICY_BLOCK_COUNTER.inc()
+
+                if shell_policy.decision == ShellPolicyDecision.BLOCKED:
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='execution_blocked_by_policy',
+                        details={'task_type': 'shell', 'reason': shell_policy.reason, 'command_hash': command_hash},
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, f'Shell command blocked by safety policy ({shell_policy.reason}).')
+                    return
+
+                if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    has_grant = await repo.has_active_approval_grant(
+                        identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE
+                    )
+                    shell_requires_approval = not has_grant
+                    if has_grant:
+                        await append_audit(
+                            db,
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                            actor='coordinator',
+                            action='approval_grant_reused',
+                            details={'scope': SHELL_MUTATION_SCOPE, 'command_hash': command_hash},
+                        )
+
+            if task_type == TaskType.SHELL:
+                status = TaskStatus.WAITING_APPROVAL if shell_requires_approval else TaskStatus.QUEUED
+            else:
+                status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
             task = await repo.create_task(
                 tenant_id=identity.tenant_id,
                 user_id=identity.user_id,
@@ -386,7 +482,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 }
                 await _send_telegram_message(
                     chat_id,
-                    f'Task {task.id[:8]} needs approval for destructive action. Approve?',
+                    f'Task {task.id[:8]} needs approval before running this command. Approve?',
                     reply_markup=buttons,
                 )
                 await db.commit()
@@ -450,6 +546,35 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             await bus.publish_cancel(task.id)
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
+            if task.task_type == TaskType.SHELL.value:
+                command = str(task.payload.get('command', '')).strip()
+                command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
+                shell_policy = classify_shell_command(
+                    command,
+                    mode=settings.shell_policy_mode,
+                    allow_hard_block_override=settings.shell_allow_hard_block_override,
+                )
+                if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    grant, refreshed = await repo.issue_approval_grant(
+                        tenant_id=task.tenant_id,
+                        user_id=task.user_id,
+                        scope=SHELL_MUTATION_SCOPE,
+                        ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
+                    )
+                    await append_audit(
+                        db,
+                        tenant_id=task.tenant_id,
+                        user_id=task.user_id,
+                        actor='coordinator',
+                        action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
+                        details={
+                            'scope': SHELL_MUTATION_SCOPE,
+                            'grant_id': grant.id,
+                            'expires_at': grant.expires_at.isoformat(),
+                            'command_hash': command_hash,
+                        },
+                    )
+
             await repo.update_task_status(task.id, TaskStatus.QUEUED)
             try:
                 risk_tier = RiskTier(task.risk_tier)

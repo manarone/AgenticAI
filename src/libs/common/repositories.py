@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from secrets import token_urlsafe
 
 from sqlalchemy import and_, func, select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from libs.common.enums import ApprovalDecision, TaskStatus
 from libs.common.models import (
     Approval,
+    ApprovalGrant,
     AuditLog,
     Conversation,
     InviteCode,
@@ -281,6 +282,90 @@ class CoreRepository:
 
     async def get_approval(self, approval_id: str) -> Approval | None:
         return (await self.db.execute(select(Approval).where(Approval.id == approval_id).limit(1))).scalar_one_or_none()
+
+    async def get_active_approval_grant(self, tenant_id: str, user_id: str, scope: str) -> ApprovalGrant | None:
+        now = datetime.utcnow()
+        stmt = (
+            select(ApprovalGrant)
+            .where(
+                and_(
+                    ApprovalGrant.tenant_id == tenant_id,
+                    ApprovalGrant.user_id == user_id,
+                    ApprovalGrant.scope == scope,
+                    ApprovalGrant.revoked_at.is_(None),
+                    ApprovalGrant.expires_at > now,
+                )
+            )
+            .order_by(ApprovalGrant.expires_at.desc())
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def has_active_approval_grant(self, tenant_id: str, user_id: str, scope: str) -> bool:
+        return (await self.get_active_approval_grant(tenant_id, user_id, scope)) is not None
+
+    async def issue_approval_grant(
+        self,
+        tenant_id: str,
+        user_id: str,
+        scope: str,
+        ttl_minutes: int,
+    ) -> tuple[ApprovalGrant, bool]:
+        now = datetime.utcnow()
+        expires_at = now + timedelta(minutes=max(1, ttl_minutes))
+
+        existing = (
+            await self.db.execute(
+                select(ApprovalGrant)
+                .where(
+                    and_(
+                        ApprovalGrant.tenant_id == tenant_id,
+                        ApprovalGrant.user_id == user_id,
+                        ApprovalGrant.scope == scope,
+                        ApprovalGrant.revoked_at.is_(None),
+                    )
+                )
+                .order_by(ApprovalGrant.updated_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        refreshed = existing is not None
+        if existing is None:
+            existing = ApprovalGrant(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                scope=scope,
+                issued_at=now,
+                expires_at=expires_at,
+                revoked_at=None,
+            )
+            self.db.add(existing)
+        else:
+            existing.issued_at = now
+            existing.expires_at = expires_at
+            existing.revoked_at = None
+
+        await self.db.flush()
+        return existing, refreshed
+
+    async def revoke_approval_grants(self, tenant_id: str, user_id: str, scope: str | None = None) -> int:
+        now = datetime.utcnow()
+        stmt = select(ApprovalGrant).where(
+            and_(
+                ApprovalGrant.tenant_id == tenant_id,
+                ApprovalGrant.user_id == user_id,
+                ApprovalGrant.revoked_at.is_(None),
+            )
+        )
+        if scope:
+            stmt = stmt.where(ApprovalGrant.scope == scope)
+
+        grants = list((await self.db.execute(stmt)).scalars().all())
+        for grant in grants:
+            grant.revoked_at = now
+        await self.db.flush()
+        return len(grants)
 
     async def log_audit(self, tenant_id: str, actor: str, action: str, details: dict, user_id: str | None = None) -> AuditLog:
         log = AuditLog(tenant_id=tenant_id, user_id=user_id, actor=actor, action=action, details=details)

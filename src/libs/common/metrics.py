@@ -5,6 +5,13 @@ REQUEST_COUNTER = Counter('agentai_requests_total', 'Total HTTP requests', ['ser
 TASK_COUNTER = Counter('agentai_tasks_total', 'Tasks processed', ['status'])
 TOKEN_COUNTER = Counter('agentai_tokens_total', 'Estimated tokens', ['tenant_id', 'model'])
 REQUEST_LATENCY = Histogram('agentai_request_latency_seconds', 'Request latency', ['service', 'endpoint'])
+SHELL_POLICY_ALLOW_COUNTER = Counter('shell_policy_allow_total', 'Shell commands auto-approved')
+SHELL_POLICY_APPROVAL_COUNTER = Counter('shell_policy_approval_total', 'Shell commands requiring approval')
+SHELL_POLICY_BLOCK_COUNTER = Counter('shell_policy_block_total', 'Shell commands blocked by policy')
+SHELL_DENIED_NO_GRANT_COUNTER = Counter(
+    'shell_execution_denied_no_grant_total',
+    'Shell command executions denied because no approval grant exists',
+)
 
 
 def metrics_response() -> Response:
