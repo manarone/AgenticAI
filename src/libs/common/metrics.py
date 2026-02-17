@@ -1,0 +1,11 @@
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from starlette.responses import Response
+
+REQUEST_COUNTER = Counter('agentai_requests_total', 'Total HTTP requests', ['service', 'endpoint'])
+TASK_COUNTER = Counter('agentai_tasks_total', 'Tasks processed', ['status'])
+TOKEN_COUNTER = Counter('agentai_tokens_total', 'Estimated tokens', ['tenant_id', 'model'])
+REQUEST_LATENCY = Histogram('agentai_request_latency_seconds', 'Request latency', ['service', 'endpoint'])
+
+
+def metrics_response() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

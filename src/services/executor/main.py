@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import asyncio
+import os
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI
+
+from libs.common.config import get_settings
+from libs.common.db import AsyncSessionLocal
+from libs.common.enums import TaskStatus, TaskType
+from libs.common.metrics import REQUEST_COUNTER, TASK_COUNTER, metrics_response
+from libs.common.models import Base
+from libs.common.repositories import CoreRepository
+from libs.common.schemas import TaskResult
+from libs.common.skill_store import SkillStore
+from libs.common.state_machine import can_transition
+from libs.common.task_bus import get_task_bus
+
+settings = get_settings()
+bus = get_task_bus()
+skill_store = SkillStore()
+WORK_DIR = Path('/tmp/agentai')
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def _run_shell(command: str) -> str:
+    allowed_prefixes = {'echo', 'ls', 'pwd', 'date', 'cat'}
+    first = (command.strip().split(' ') or [''])[0]
+    if first not in allowed_prefixes:
+        raise RuntimeError(f'Command blocked by MVP allowlist: {first}')
+
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(WORK_DIR),
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=settings.task_timeout_seconds)
+    except TimeoutError as exc:
+        proc.kill()
+        raise RuntimeError('Command timed out') from exc
+
+    if proc.returncode != 0:
+        raise RuntimeError(err.decode('utf-8', errors='ignore')[:1000])
+    return out.decode('utf-8', errors='ignore')[:4000]
+
+
+async def _run_file(instruction: str) -> str:
+    if instruction.startswith('write '):
+        _, _, rest = instruction.partition('write ')
+        path_text, _, content = rest.partition('::')
+        path = (WORK_DIR / path_text.strip()).resolve()
+        if not str(path).startswith(str(WORK_DIR.resolve())):
+            raise RuntimeError('Path denied.')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        return f'Wrote {len(content)} bytes to {path.name}'
+
+    if instruction.startswith('read '):
+        _, _, path_text = instruction.partition('read ')
+        path = (WORK_DIR / path_text.strip()).resolve()
+        if not str(path).startswith(str(WORK_DIR.resolve())):
+            raise RuntimeError('Path denied.')
+        return path.read_text()[:4000]
+
+    raise RuntimeError('Unknown file instruction. Use `write path::content` or `read path`.')
+
+
+async def _run_skill(tenant_id: str, skill_name: str, skill_input: str) -> str:
+    manifest, body = skill_store.load_skill(tenant_id, skill_name)
+    # MVP behavior: treat markdown content as instruction template and echo structured execution summary.
+    snippet = body.strip().splitlines()[0] if body.strip() else 'No body'
+    return (
+        f"Skill `{manifest.name}` v{manifest.version} executed.\n"
+        f"Risk: {manifest.risk_tier.value}\n"
+        f"Input: {skill_input}\n"
+        f"Instruction head: {snippet}"
+    )
+
+
+async def _execute_task(task_type: TaskType, tenant_id: str, payload: dict) -> str:
+    if task_type == TaskType.SHELL:
+        return await _run_shell(payload.get('command', '').strip())
+    if task_type == TaskType.FILE:
+        return await _run_file(payload.get('instruction', '').strip())
+    if task_type == TaskType.SKILL:
+        return await _run_skill(
+            tenant_id=tenant_id,
+            skill_name=payload.get('skill_name', '').strip(),
+            skill_input=payload.get('input', '').strip(),
+        )
+    raise RuntimeError(f'Unsupported task type: {task_type.value}')
+
+
+async def _process_task_once(message_id: str, envelope) -> None:
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        task = await repo.get_task(str(envelope.task_id))
+        if not task:
+            await bus.ack_task(message_id)
+            return
+
+        if task.status == TaskStatus.CANCELED:
+            await bus.ack_task(message_id)
+            return
+
+        if task.status not in {TaskStatus.QUEUED, TaskStatus.DISPATCHING, TaskStatus.RUNNING}:
+            await bus.ack_task(message_id)
+            return
+
+        if can_transition(task.status, TaskStatus.DISPATCHING):
+            await repo.update_task_status(task.id, TaskStatus.DISPATCHING)
+
+        attempts = await repo.increment_task_attempt(task.id)
+        await repo.update_task_status(task.id, TaskStatus.RUNNING)
+        await db.commit()
+
+        try:
+            output = await _execute_task(TaskType(task.task_type), task.tenant_id, task.payload)
+            await bus.publish_result(
+                TaskResult(
+                    task_id=envelope.task_id,
+                    tenant_id=envelope.tenant_id,
+                    user_id=envelope.user_id,
+                    success=True,
+                    output=output,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            TASK_COUNTER.labels(status='success').inc()
+        except Exception as exc:
+            if attempts <= settings.max_executor_retries:
+                await repo.update_task_status(task.id, TaskStatus.QUEUED, error=f'Retry {attempts}: {exc}')
+                await db.commit()
+                await bus.publish_task(envelope)
+                TASK_COUNTER.labels(status='retry').inc()
+            else:
+                await bus.publish_result(
+                    TaskResult(
+                        task_id=envelope.task_id,
+                        tenant_id=envelope.tenant_id,
+                        user_id=envelope.user_id,
+                        success=False,
+                        output='Task failed',
+                        error=str(exc),
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                TASK_COUNTER.labels(status='failed').inc()
+
+        await db.commit()
+        await bus.ack_task(message_id)
+
+
+async def _worker_forever() -> None:
+    while True:
+        try:
+            messages = await bus.read_tasks(consumer_name='executor-worker', count=10, block_ms=1000)
+            for message_id, envelope in messages:
+                await _process_task_once(message_id, envelope)
+        except Exception:
+            await asyncio.sleep(1.0)
+
+
+async def _run_single_task_if_set() -> None:
+    # Optional hook for Kubernetes Job style launch where pod runs once for a specific task.
+    target_task_id = os.getenv('EXECUTOR_ONCE_TASK_ID', '').strip()
+    if not target_task_id:
+        return
+
+    while True:
+        messages = await bus.read_tasks(consumer_name=f'executor-once-{target_task_id[:8]}', count=10, block_ms=500)
+        found = False
+        for message_id, envelope in messages:
+            if str(envelope.task_id) != target_task_id:
+                continue
+            found = True
+            await _process_task_once(message_id, envelope)
+        if found:
+            break
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with AsyncSessionLocal() as db:
+        async with db.bind.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    if os.getenv('EXECUTOR_ONCE_TASK_ID', '').strip():
+        once = asyncio.create_task(_run_single_task_if_set())
+        app.state.worker = once
+    else:
+        worker = asyncio.create_task(_worker_forever())
+        app.state.worker = worker
+
+    yield
+
+    app.state.worker.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.worker
+
+
+app = FastAPI(title='agentai-executor', lifespan=lifespan)
+
+
+@app.get('/healthz')
+async def healthz() -> dict:
+    REQUEST_COUNTER.labels(service='executor', endpoint='healthz').inc()
+    return {'status': 'ok', 'service': 'executor'}
+
+
+@app.get('/metrics')
+async def metrics():
+    return metrics_response()
+
+
+@app.get('/')
+async def root() -> dict:
+    return {'service': 'executor', 'status': 'ready'}
