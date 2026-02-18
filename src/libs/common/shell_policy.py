@@ -66,7 +66,6 @@ _MUTATING_KEYWORDS = [
 ]
 
 _BLOCK_PATTERNS = [
-    (r'\brm\s+-rf\s+/(?:\s|$)', 'rm_rf_root'),
     (r':\(\)\s*\{\s*:\|:\s*&\s*\};:', 'fork_bomb'),
     (r'\b(mkfs(\.\w+)?|fdisk|parted|sfdisk)\b', 'disk_format_tool'),
     (r'\bdd\s+if=/dev/(zero|random|urandom)\s+of=/dev/', 'dd_device_wipe'),
@@ -144,11 +143,49 @@ def _has_output_redirection(command: str) -> bool:
 
 
 def _blocked_reason(command: str) -> str | None:
+    if _is_root_delete_command(command):
+        return 'rm_rf_root'
+
     normalized = command.lower().strip()
     for pattern, reason in _BLOCK_PATTERNS:
         if re.search(pattern, normalized):
             return reason
     return None
+
+
+def _is_root_delete_command(command: str) -> bool:
+    for segment in _segments(command):
+        try:
+            parts = shlex.split(segment, posix=True)
+        except ValueError:
+            continue
+        if not parts or parts[0].lower() != 'rm':
+            continue
+
+        has_recursive = False
+        has_force = False
+        root_targeted = False
+
+        for token in parts[1:]:
+            lowered = token.lower()
+            if token.startswith('-'):
+                if lowered in {'--recursive', '-r', '-R'} or ('r' in token and token.startswith('-')):
+                    has_recursive = True
+                if lowered in {'--force', '-f'} or ('f' in token and token.startswith('-')):
+                    has_force = True
+                if lowered == '--no-preserve-root':
+                    root_targeted = True
+                continue
+
+            if token in {'/', '/*', '/.*', '/.', '/..'}:
+                root_targeted = True
+            elif token.startswith('/*') or token.startswith('/.*'):
+                root_targeted = True
+
+        if has_recursive and has_force and root_targeted:
+            return True
+
+    return False
 
 
 def classify_shell_command(

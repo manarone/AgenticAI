@@ -18,6 +18,12 @@ def test_hard_block_is_denied_by_default():
     assert result.reason == 'rm_rf_root'
 
 
+def test_root_glob_delete_is_hard_blocked():
+    result = classify_shell_command('rm -rf /*')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'rm_rf_root'
+
+
 def test_hard_block_can_be_overridden_to_approval():
     result = classify_shell_command('rm -rf /', allow_hard_block_override=True)
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
