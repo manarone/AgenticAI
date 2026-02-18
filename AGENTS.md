@@ -1,14 +1,16 @@
 # Agent Workflow Rules
 
 ## PR Review Loop (Required)
-1. After opening or updating a PR, post a comment that explicitly pings `@greptile` (example: `@greptile review`).
-2. Wait for Greptile review output before merging.
-3. Treat Greptile and CI failures as blockers.
+1. After opening or updating a PR, post comments that explicitly ping both bots:
+   `@greptile review latest head <short_sha> please`
+   `@codex review latest head <short_sha> please`
+2. Wait for both bot responses on the latest head commit before merging or re-pinging.
+3. Treat bot findings and CI failures as blockers.
 4. Fix actionable findings in new commits pushed to the same PR branch.
-5. Re-run review by pinging `@greptile` again after fixes.
-6. After each ping, wait at least 5 minutes before checking or re-pinging (Greptile review is not immediate).
-7. Only re-ping if no review appears for the latest head commit after the wait window.
-8. Repeat fix -> push -> re-review until there are no blocking findings and required checks are green.
+5. Re-run review by pinging both bots again after fixes.
+6. After each ping wave, wait at least 5 minutes before checking or re-pinging.
+7. Only re-ping a bot if no review appears for the latest head commit after the wait window.
+8. Repeat fix -> push -> re-review until both bots are clear (or no blocking findings remain) and required checks are green.
 9. Then stop the loop and hand off for final merge decision.
 
 ## Review Scope Guidance
