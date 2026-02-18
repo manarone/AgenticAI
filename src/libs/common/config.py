@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     mem0_embedder_provider: str = Field(default='fastembed', alias='MEM0_EMBEDDER_PROVIDER')
     mem0_embedding_model: str = Field(default='nomic-ai/nomic-embed-text-v1.5', alias='MEM0_EMBEDDING_MODEL')
     mem0_embedding_dims: int = Field(default=768, alias='MEM0_EMBEDDING_DIMS')
+    # Backward-compatible local Mem0 LLM knobs; omitted from sample env but still supported.
+    mem0_llm_provider: str = Field(default='lmstudio', alias='MEM0_LLM_PROVIDER')
     mem0_llm_model: str = Field(default='minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
+    mem0_llm_base_url: str = Field(default='http://localhost:1234/v1', alias='MEM0_LLM_BASE_URL')
     mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
     k8s_namespace: str = Field(default='agentai', alias='K8S_NAMESPACE')
@@ -69,6 +72,14 @@ class Settings(BaseSettings):
     web_search_deep_results: int = Field(default=10, alias='WEB_SEARCH_DEEP_RESULTS')
     web_search_max_results: int = Field(default=10, alias='WEB_SEARCH_MAX_RESULTS')
     web_search_max_concurrent: int = Field(default=8, alias='WEB_SEARCH_MAX_CONCURRENT')
+
+    @field_validator('shell_policy_mode')
+    @classmethod
+    def _validate_shell_policy_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {'balanced', 'strict', 'permissive'}:
+            raise ValueError('SHELL_POLICY_MODE must be one of: balanced, strict, permissive')
+        return normalized
 
 
 @lru_cache(maxsize=1)

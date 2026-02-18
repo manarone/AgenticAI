@@ -76,9 +76,6 @@ class Mem0LocalMemoryStore:
         settings = get_settings()
         self.user_prefix = settings.mem0_user_prefix
 
-        if not settings.openai_api_key:
-            raise ValueError('OPENAI_API_KEY is required when MEMORY_BACKEND=mem0_local')
-
         from mem0 import Memory
 
         history_path = Path(settings.mem0_history_db_path).expanduser()
@@ -88,6 +85,11 @@ class Mem0LocalMemoryStore:
 
         embedder_provider = settings.mem0_embedder_provider.lower().strip()
         if embedder_provider == 'openai':
+            if not settings.openai_api_key:
+                raise ValueError(
+                    'OPENAI_API_KEY is required when MEMORY_BACKEND=mem0_local '
+                    'and MEM0_EMBEDDER_PROVIDER=openai'
+                )
             embedder_config: dict[str, Any] = {
                 'api_key': settings.openai_api_key,
                 'openai_base_url': settings.openai_base_url,
@@ -105,6 +107,33 @@ class Mem0LocalMemoryStore:
                 'Supported: openai, fastembed.'
             )
 
+        llm_provider = settings.mem0_llm_provider.lower().strip()
+        if llm_provider == 'openai':
+            if not settings.openai_api_key:
+                raise ValueError(
+                    'OPENAI_API_KEY is required when MEMORY_BACKEND=mem0_local '
+                    'and MEM0_LLM_PROVIDER=openai'
+                )
+            llm_config: dict[str, Any] = {
+                'api_key': settings.openai_api_key,
+                'openai_base_url': settings.openai_base_url,
+                'model': settings.mem0_llm_model,
+            }
+        elif llm_provider == 'lmstudio':
+            llm_config = {
+                'model': settings.mem0_llm_model,
+                # lmstudio is OpenAI-compatible; include explicit endpoint config.
+                'base_url': settings.mem0_llm_base_url,
+                'openai_base_url': settings.mem0_llm_base_url,
+            }
+            if settings.openai_api_key:
+                llm_config['api_key'] = settings.openai_api_key
+        else:
+            raise ValueError(
+                f'Unsupported MEM0_LLM_PROVIDER `{settings.mem0_llm_provider}`. '
+                'Supported: openai, lmstudio.'
+            )
+
         config: dict[str, Any] = {
             'vector_store': {
                 'provider': 'qdrant',
@@ -116,12 +145,8 @@ class Mem0LocalMemoryStore:
                 },
             },
             'llm': {
-                'provider': 'openai',
-                'config': {
-                    'api_key': settings.openai_api_key,
-                    'openai_base_url': settings.openai_base_url,
-                    'model': settings.mem0_llm_model,
-                },
+                'provider': llm_provider,
+                'config': llm_config,
             },
             'embedder': {
                 'provider': embedder_provider,
