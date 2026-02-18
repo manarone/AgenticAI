@@ -60,6 +60,35 @@ async def test_approval_grant_is_tenant_user_scoped_and_expires():
         assert renewed.id != grant.id
 
 
+async def test_revoke_approval_grants_counts_only_active():
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        tenant, user, _ = await repo.get_or_create_default_tenant_user()
+
+        active, _ = await repo.issue_approval_grant(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            scope='shell_mutation',
+            ttl_minutes=10,
+        )
+        expired, _ = await repo.issue_approval_grant(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            scope='shell_mutation_expired',
+            ttl_minutes=10,
+        )
+        expired.expires_at = datetime.utcnow() - timedelta(minutes=1)
+        await db.flush()
+
+        revoked = await repo.revoke_approval_grants(tenant.id, user.id)
+        assert revoked == 1
+
+        active_row = (await db.execute(select(ApprovalGrant).where(ApprovalGrant.id == active.id))).scalar_one()
+        expired_row = (await db.execute(select(ApprovalGrant).where(ApprovalGrant.id == expired.id))).scalar_one()
+        assert active_row.revoked_at is not None
+        assert expired_row.revoked_at is None
+
+
 async def test_set_approval_decision_is_single_use():
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)

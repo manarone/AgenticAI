@@ -367,6 +367,7 @@ class CoreRepository:
                 ApprovalGrant.tenant_id == tenant_id,
                 ApprovalGrant.user_id == user_id,
                 ApprovalGrant.revoked_at.is_(None),
+                ApprovalGrant.expires_at > now,
             )
         )
         if scope:

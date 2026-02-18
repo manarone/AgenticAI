@@ -30,8 +30,8 @@ from libs.common.metrics import (
 )
 from libs.common.models import Base
 from libs.common.risk import classify_risk, requires_approval
-from libs.common.shell_policy import SHELL_MUTATION_SCOPE, ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskEnvelope
+from libs.common.shell_policy import SHELL_MUTATION_SCOPE, ShellPolicyDecision, classify_shell_command
 from libs.common.sanitizer import sanitize_input
 from libs.common.state_machine import can_transition
 from libs.common.task_bus import get_task_bus
@@ -799,6 +799,8 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                             scope=SHELL_MUTATION_SCOPE,
                             ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
                         )
+                        task.payload = {**(task.payload or {}), 'grant_id': grant.id}
+                        await db.flush()
                         await append_audit(
                             db,
                             tenant_id=task.tenant_id,

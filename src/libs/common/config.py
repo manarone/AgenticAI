@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     shell_remote_enabled: bool = Field(default=False, alias='SHELL_REMOTE_ENABLED')
     shell_timeout_seconds: int = Field(default=120, alias='SHELL_TIMEOUT_SECONDS')
     shell_env_allowlist: str = Field(default='PATH,HOME,LANG,LC_ALL,TERM,TZ', alias='SHELL_ENV_ALLOWLIST')
+
+    @field_validator('shell_policy_mode')
+    @classmethod
+    def _validate_shell_policy_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {'balanced', 'strict', 'permissive'}:
+            raise ValueError('SHELL_POLICY_MODE must be one of: balanced, strict, permissive')
+        return normalized
 
 
 @lru_cache(maxsize=1)
