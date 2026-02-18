@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -271,14 +271,20 @@ class CoreRepository:
         return approval
 
     async def set_approval_decision(self, approval_id: str, decision: ApprovalDecision) -> Approval | None:
-        approval = (
-            await self.db.execute(select(Approval).where(Approval.id == approval_id).limit(1))
-        ).scalar_one_or_none()
-        if not approval:
+        result = await self.db.execute(
+            update(Approval)
+            .where(
+                and_(
+                    Approval.id == approval_id,
+                    Approval.decision == ApprovalDecision.PENDING,
+                )
+            )
+            .values(decision=decision)
+        )
+        if (result.rowcount or 0) < 1:
             return None
-        approval.decision = decision
         await self.db.flush()
-        return approval
+        return await self.get_approval(approval_id)
 
     async def get_approval(self, approval_id: str) -> Approval | None:
         return (await self.db.execute(select(Approval).where(Approval.id == approval_id).limit(1))).scalar_one_or_none()

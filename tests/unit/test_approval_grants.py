@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from libs.common.db import AsyncSessionLocal
+from libs.common.enums import ApprovalDecision
 from libs.common.models import ApprovalGrant, User
 from libs.common.repositories import CoreRepository
 
@@ -57,3 +58,25 @@ async def test_approval_grant_is_tenant_user_scoped_and_expires():
         )
         assert refreshed is False
         assert renewed.id != grant.id
+
+
+async def test_set_approval_decision_is_single_use():
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        tenant, user, convo = await repo.get_or_create_default_tenant_user()
+        task = await repo.create_task(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            conversation_id=convo.id,
+            task_type='SHELL',
+            risk_tier='HIGH',
+            payload={'command': 'systemctl restart nginx'},
+        )
+        approval = await repo.create_approval(task.id, tenant.id, user.id)
+
+        first = await repo.set_approval_decision(approval.id, ApprovalDecision.APPROVED)
+        second = await repo.set_approval_decision(approval.id, ApprovalDecision.APPROVED)
+
+        assert first is not None
+        assert first.decision == ApprovalDecision.APPROVED
+        assert second is None
