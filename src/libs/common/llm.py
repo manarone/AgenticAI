@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -34,24 +35,34 @@ class LLMToolChatResult:
 class LLMClient:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._http_client: httpx.AsyncClient | None = None
+        self._http_client_lock = asyncio.Lock()
 
     def _development_fallback(self, user_prompt: str, memory: list[str] | None) -> tuple[str, int, int]:
         text = f'MVP fallback response. Memory used: {len(memory or [])}. Request: {user_prompt[:120]}'
         return text, 100, 100
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        if self._http_client is not None:
+            return self._http_client
+        async with self._http_client_lock:
+            if self._http_client is None:
+                self._http_client = httpx.AsyncClient(timeout=30)
+            return self._http_client
 
     async def _post_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             'Authorization': f'Bearer {self.settings.openai_api_key}',
             'Content-Type': 'application/json',
         }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        client = await self._get_http_client()
+        resp = await client.post(
+            f"{self.settings.openai_base_url.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     @staticmethod
     def _memory_wrapped_user_prompt(user_prompt: str, memory: list[str] | None) -> str:

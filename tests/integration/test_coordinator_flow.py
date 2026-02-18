@@ -468,6 +468,52 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     assert not any('approved and queued' in m['text'].lower() for m in sent_messages)
 
 
+def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch):
+    from services.coordinator.main import app, settings, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        if 'blocked by safety policy' in str(text).lower():
+            raise RuntimeError('telegram send failure')
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        return None
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+    monkeypatch.setattr(settings, 'shell_allow_hard_block_override', True)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 602}, 'chat': {'id': 602}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: rm -rf /', 'from': {'id': 602}, 'chat': {'id': 602}}},
+        )
+
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+
+        monkeypatch.setattr(settings, 'shell_allow_hard_block_override', False)
+        resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-blocked-fail-send', 'data': callback_data, 'from': {'id': 602}}},
+        )
+        assert resp.status_code == 500
+
+    task = asyncio.run(_latest_task_for_user(602))
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert 'blocked by shell policy during approval' in (task.error or '').lower()
+
+
 def test_non_command_tool_response_appends_citations(monkeypatch):
     from services.coordinator.main import app, llm, telegram
 

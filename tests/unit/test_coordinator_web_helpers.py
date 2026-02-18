@@ -35,3 +35,11 @@ def test_collect_web_failure_notice_treats_missing_ok_as_failure():
 def test_shell_approval_message_escapes_code_delimiters():
     text = _shell_approval_message('12345678-1234', {'command': 'echo `whoami` && cat /tmp/a'})
     assert 'echo \\`whoami\\` && cat /tmp/a' in text
+
+
+def test_shell_approval_message_escapes_remote_host_for_markdown():
+    text = _shell_approval_message(
+        '12345678-1234',
+        {'command': 'ls -la', 'remote_host': 'db_node[01]'},
+    )
+    assert 'on db\\_node\\[01\\]' in text

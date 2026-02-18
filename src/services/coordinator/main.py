@@ -106,6 +106,16 @@ def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> 
     return chunks
 
 
+def _escape_markdown_v1(text: str) -> str:
+    return (
+        text.replace('\\', '\\\\')
+        .replace('_', '\\_')
+        .replace('*', '\\*')
+        .replace('[', '\\[')
+        .replace(']', '\\]')
+    )
+
+
 def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 320) -> str:
     command = str(payload.get('command', '')).strip().replace('\n', ' ')
     if not command:
@@ -116,7 +126,8 @@ def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 
     escaped_command = command.replace('\\', '\\\\').replace('`', '\\`')
 
     remote_host = str(payload.get('remote_host', '')).strip()
-    target = f' on {remote_host}' if remote_host else ''
+    escaped_remote_host = _escape_markdown_v1(remote_host) if remote_host else ''
+    target = f' on {escaped_remote_host}' if escaped_remote_host else ''
     return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n`{escaped_command}`\nApprove?'
 
 
@@ -1112,6 +1123,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                             'command_hash': command_hash,
                         },
                     )
+                    await db.commit()
                     await _send_telegram_message(
                         chat_id,
                         f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
