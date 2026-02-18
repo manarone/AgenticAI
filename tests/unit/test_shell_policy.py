@@ -178,6 +178,12 @@ def test_permissive_mode_non_readonly_still_requires_approval():
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
 
 
+def test_unknown_policy_mode_fails_closed_for_non_readonly():
+    result = classify_shell_command('python3 -c "print(1)"', mode='nonsense')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'unknown_policy_mode'
+
+
 def test_sudo_wrapped_mutating_tool_keeps_specific_reason():
     result = classify_shell_command('sudo systemctl restart nginx')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL

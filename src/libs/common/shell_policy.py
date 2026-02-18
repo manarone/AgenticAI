@@ -541,6 +541,10 @@ def classify_shell_command(
     allow_hard_block_override: bool = False,
 ) -> ShellPolicyResult:
     normalized_mode = (mode or 'balanced').strip().lower()
+    unknown_mode = normalized_mode not in {'balanced', 'strict', 'permissive'}
+    if unknown_mode:
+        normalized_mode = 'strict'
+
     blocked_reason = _blocked_reason(command)
     if blocked_reason:
         if allow_hard_block_override:
@@ -565,7 +569,7 @@ def classify_shell_command(
             return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
         return ShellPolicyResult(
             decision=ShellPolicyDecision.REQUIRE_APPROVAL,
-            reason=mutating_reason or 'strict_mode_non_allowlisted',
+            reason=mutating_reason or ('unknown_policy_mode' if unknown_mode else 'strict_mode_non_allowlisted'),
         )
 
     # balanced (default)

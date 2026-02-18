@@ -676,6 +676,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
             await bus.publish_cancel(task.id)
+            await db.commit()
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
             if task.task_type == TaskType.SHELL.value:
