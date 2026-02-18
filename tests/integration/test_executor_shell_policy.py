@@ -66,6 +66,7 @@ async def test_executor_blocks_hard_blocked_command():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+        assert updated.status == TaskStatus.FAILED
 
 
 async def test_executor_remote_shell_disabled_by_default():
@@ -85,6 +86,7 @@ async def test_executor_remote_shell_disabled_by_default():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+        assert updated.status == TaskStatus.FAILED
 
 
 async def test_executor_rejects_remote_host_option_injection(monkeypatch):
@@ -105,6 +107,7 @@ async def test_executor_rejects_remote_host_option_injection(monkeypatch):
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+        assert updated.status == TaskStatus.FAILED
 
 
 async def test_executor_denies_mutating_shell_without_grant_or_direct_approval():
@@ -124,6 +127,7 @@ async def test_executor_denies_mutating_shell_without_grant_or_direct_approval()
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+        assert updated.status == TaskStatus.FAILED
 
 
 async def test_executor_allows_mutating_shell_with_queue_time_grant_proof_after_expiry():

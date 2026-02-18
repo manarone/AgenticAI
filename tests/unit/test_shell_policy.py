@@ -170,3 +170,21 @@ def test_bare_env_is_readonly():
 def test_permissive_mode_non_readonly_still_requires_approval():
     result = classify_shell_command('python3 -c "print(1)"', mode='permissive')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+
+
+def test_sudo_wrapped_mutating_tool_keeps_specific_reason():
+    result = classify_shell_command('sudo systemctl restart nginx')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'mutating_tool_systemctl'
+
+
+def test_sed_combined_in_place_flag_requires_approval():
+    result = classify_shell_command('sed -Ei s/a/b/g /tmp/file.txt')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'in_place_edit'
+
+
+def test_force_clobber_redirection_requires_approval():
+    result = classify_shell_command('echo hello >| /tmp/out.txt')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'output_redirection'

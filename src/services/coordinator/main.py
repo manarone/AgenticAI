@@ -30,7 +30,7 @@ from libs.common.metrics import (
 )
 from libs.common.models import Base
 from libs.common.risk import classify_risk, requires_approval
-from libs.common.shell_policy import ShellPolicyDecision, classify_shell_command
+from libs.common.shell_policy import SHELL_MUTATION_SCOPE, ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskEnvelope
 from libs.common.sanitizer import sanitize_input
 from libs.common.state_machine import can_transition
@@ -47,9 +47,6 @@ job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
-SHELL_MUTATION_SCOPE = 'shell_mutation'
-
-
 def _maybe_launch_executor_job(task_id: str) -> None:
     if not settings.launch_executor_job:
         return
@@ -90,7 +87,11 @@ def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 
 
     remote_host = str(payload.get('remote_host', '')).strip()
     target = f' on {remote_host}' if remote_host else ''
-    return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n{command}\nApprove?'
+    return (
+        f'Task {task_id[:8]} needs approval before running this shell command{target}:\n{command}\n'
+        f'Approving starts a {settings.shell_mutation_grant_ttl_minutes}-minute shell-mutation session.\n'
+        'Approve?'
+    )
 
 
 async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
@@ -165,16 +166,27 @@ async def _consume_results_forever() -> None:
                         continue
 
                     next_status = TaskStatus.SUCCEEDED if result.success else TaskStatus.FAILED
-                    if not can_transition(task.status, next_status):
+                    if task.status == next_status:
+                        # Executor may have already set terminal status; still process result side effects.
+                        updated = task
+                        if task.result != result.output or task.error != result.error:
+                            updated = await repo.update_task_status(
+                                task_id=task.id,
+                                status=next_status,
+                                result=result.output,
+                                error=result.error,
+                            )
+                    elif can_transition(task.status, next_status):
+                        updated = await repo.update_task_status(
+                            task_id=task.id,
+                            status=next_status,
+                            result=result.output,
+                            error=result.error,
+                        )
+                    else:
                         await bus.ack_result(message_id)
                         continue
 
-                    updated = await repo.update_task_status(
-                        task_id=task.id,
-                        status=next_status,
-                        result=result.output,
-                        error=result.error,
-                    )
                     if updated:
                         await repo.add_message(task.tenant_id, task.user_id, task.conversation_id, 'assistant', result.output)
                         identity = await repo.get_identity_by_user_id(task.user_id)

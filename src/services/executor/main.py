@@ -23,7 +23,7 @@ from libs.common.metrics import (
 )
 from libs.common.models import Base
 from libs.common.repositories import CoreRepository
-from libs.common.shell_policy import ShellPolicyDecision, classify_shell_command
+from libs.common.shell_policy import SHELL_MUTATION_SCOPE, ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskResult
 from libs.common.skill_store import SkillStore
 from libs.common.state_machine import can_transition
@@ -34,7 +34,6 @@ bus = get_task_bus()
 skill_store = SkillStore()
 WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
-SHELL_MUTATION_SCOPE = 'shell_mutation'
 logger = logging.getLogger(__name__)
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 
@@ -312,6 +311,8 @@ async def _process_task_once(message_id: str, envelope) -> None:
             )
             TASK_COUNTER.labels(status='success').inc()
         except NonRetriableExecutionError as exc:
+            await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
+            await db.commit()
             await bus.publish_result(
                 TaskResult(
                     task_id=envelope.task_id,

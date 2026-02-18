@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import shlex
 from dataclasses import dataclass
 from enum import Enum
@@ -17,6 +16,8 @@ class ShellPolicyResult:
     decision: ShellPolicyDecision
     reason: str
 
+
+SHELL_MUTATION_SCOPE = 'shell_mutation'
 
 _READ_ONLY_COMMANDS = {
     'ls',
@@ -265,7 +266,7 @@ def _readonly_reason(command: str) -> str | None:
 
 
 def _mutating_reason(command: str) -> str | None:
-    normalized = command.lower().strip()
+    normalized = command.strip()
     if not normalized:
         return 'empty_command'
 
@@ -278,19 +279,22 @@ def _mutating_reason(command: str) -> str | None:
     if _has_output_redirection(command):
         return 'output_redirection'
 
-    for segment in _segments(normalized):
+    for segment in _segments(command):
         parts = _tokens(segment)
         if parts is None:
             return 'shell_parse_error'
 
-        first, second = _first_two_tokens(parts)
-        if first in _MUTATING_PREFIXES:
-            return f'mutating_prefix_{first}'
-        if first == 'find' and _find_has_mutating_action(parts):
-            return 'find_mutating_action'
+        first = _command_name(parts[0]) if parts else ''
         if first == 'env' and _env_subcommand(parts):
             return 'env_invokes_subcommand'
-        if first == 'sed' and second == '-i':
+
+        normalized_parts = _unwrap_prefixed_command(parts)
+        first, second = _first_two_tokens(normalized_parts)
+        if first in _MUTATING_PREFIXES:
+            return f'mutating_prefix_{first}'
+        if first == 'find' and _find_has_mutating_action(normalized_parts):
+            return 'find_mutating_action'
+        if first == 'sed' and _sed_has_in_place_option(normalized_parts):
             return 'in_place_edit'
         if first in _SERVICE_MANAGERS:
             return f'mutating_tool_{first}'
@@ -354,7 +358,20 @@ def _has_output_redirection(command: str) -> bool:
     except ValueError:
         return False
 
-    return any(token in {'>', '>>'} for token in tokens)
+    return any(token in {'>', '>>', '>|'} for token in tokens)
+
+
+def _sed_has_in_place_option(parts: list[str] | None) -> bool:
+    if not parts:
+        return False
+
+    for token in parts[1:]:
+        lowered = token.lower()
+        if lowered == '-i' or lowered == '--in-place' or lowered.startswith('--in-place='):
+            return True
+        if token.startswith('-') and not token.startswith('--') and 'i' in token[1:].lower():
+            return True
+    return False
 
 
 def _blocked_reason(command: str) -> str | None:
