@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from libs.common.auth import require_admin_token
-from libs.common.db import AsyncSessionLocal, get_db
+from libs.common.db import AsyncSessionLocal, engine as db_engine, get_db
 from libs.common.metrics import REQUEST_COUNTER, metrics_response
 from libs.common.models import Base
 from libs.common.repositories import CoreRepository
@@ -21,7 +21,7 @@ class InviteCodeRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        async with db.bind.begin() as conn:
+        async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         repo = CoreRepository(db)
         await repo.get_or_create_default_tenant_user()

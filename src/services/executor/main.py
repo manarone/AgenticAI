@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from libs.common.audit import append_audit
 from libs.common.config import get_settings
-from libs.common.db import AsyncSessionLocal
+from libs.common.db import AsyncSessionLocal, engine as db_engine
 from libs.common.enums import TaskStatus, TaskType
 from libs.common.metrics import (
     REQUEST_COUNTER,
@@ -372,7 +372,7 @@ async def _run_single_task_if_set() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        async with db.bind.begin() as conn:
+        async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
     if os.getenv('EXECUTOR_ONCE_TASK_ID', '').strip():

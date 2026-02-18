@@ -318,7 +318,13 @@ class CoreRepository:
         scope: str,
         ttl_minutes: int,
     ) -> tuple[ApprovalGrant, bool]:
-        bind = self.db.bind
+        bind = None
+        get_bind = getattr(self.db, 'get_bind', None)
+        if callable(get_bind):
+            try:
+                bind = get_bind()
+            except Exception:
+                bind = None
         if bind is not None and bind.dialect.name.startswith('postgresql'):
             lock_key = int.from_bytes(
                 hashlib.sha256(f'{tenant_id}:{user_id}:{scope}'.encode('utf-8')).digest()[:8],

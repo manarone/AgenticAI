@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.common.audit import append_audit
 from libs.common.config import get_settings
-from libs.common.db import AsyncSessionLocal, get_db
+from libs.common.db import AsyncSessionLocal, engine as db_engine, get_db
 from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
 from libs.common.k8s import ExecutorJobLauncher
 from libs.common.llm import LLMClient, ToolExecutionRecord
@@ -120,13 +120,24 @@ def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 
     return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n`{escaped_command}`\nApprove?'
 
 
-async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
+async def _send_telegram_message(
+    chat_id: str,
+    text: str,
+    reply_markup: dict | None = None,
+    parse_mode: str | None = None,
+) -> None:
     if reply_markup is not None:
-        await telegram.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        payload = {'chat_id': chat_id, 'text': text, 'reply_markup': reply_markup}
+        if parse_mode:
+            payload['parse_mode'] = parse_mode
+        await telegram.send_message(**payload)
         return
 
     for chunk in _chunk_telegram_text(text):
-        await telegram.send_message(chat_id=chat_id, text=chunk)
+        payload = {'chat_id': chat_id, 'text': chunk}
+        if parse_mode:
+            payload['parse_mode'] = parse_mode
+        await telegram.send_message(**payload)
 
 
 @asynccontextmanager
@@ -439,7 +450,7 @@ async def _consume_results_forever() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        async with db.bind.begin() as conn:
+        async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         repo = CoreRepository(db)
         await repo.get_or_create_default_tenant_user()
@@ -911,6 +922,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     chat_id,
                     approval_text,
                     reply_markup=buttons,
+                    parse_mode='Markdown',
                 )
                 await db.commit()
                 return

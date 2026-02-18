@@ -65,7 +65,7 @@ def test_start_and_direct_response(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
@@ -102,7 +102,7 @@ def test_destructive_flow_waits_for_approval(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
@@ -132,7 +132,7 @@ def test_blocked_shell_command_is_rejected(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
@@ -159,7 +159,7 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_answer_callback_query(callback_query_id, text):
@@ -204,7 +204,7 @@ def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_publish_task(envelope):
@@ -239,7 +239,7 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     sent_messages = []
     callback_answers = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_answer_callback_query(callback_query_id, text):
@@ -292,7 +292,7 @@ def test_result_consumer_notifies_when_executor_already_set_terminal_status(monk
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
@@ -340,7 +340,7 @@ def test_unknown_approval_callback_action_is_rejected(monkeypatch):
     sent_messages = []
     callback_answers = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_answer_callback_query(callback_query_id, text):
@@ -383,7 +383,7 @@ def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monk
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_publish_cancel(task_id):
@@ -426,7 +426,7 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     sent_messages = []
     callback_answers = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_answer_callback_query(callback_query_id, text):
@@ -473,7 +473,7 @@ def test_non_command_tool_response_appends_citations(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_chat_with_tools(**kwargs):
@@ -524,7 +524,7 @@ def test_web_command_returns_sources(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_search(query, *, depth='balanced', max_results=None):
@@ -563,7 +563,7 @@ def test_web_command_fail_open_notice(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_search(query, *, depth='balanced', max_results=None):
@@ -598,7 +598,7 @@ def test_web_command_disabled(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
@@ -625,7 +625,7 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
     sent_messages = []
     seen_tools = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     async def fake_chat_with_tools(**kwargs):
@@ -657,7 +657,7 @@ def test_invalid_remote_shell_syntax_is_rejected(monkeypatch):
 
     sent_messages = []
 
-    async def fake_send_message(chat_id, text, reply_markup=None):
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)

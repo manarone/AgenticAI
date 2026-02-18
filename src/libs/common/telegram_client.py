@@ -24,12 +24,20 @@ class TelegramClient:
         if isinstance(data, dict) and not data.get('ok', False):
             raise RuntimeError(f'Telegram {method} failed: {data}')
 
-    async def send_message(self, chat_id: str | int, text: str, reply_markup: dict | None = None) -> None:
+    async def send_message(
+        self,
+        chat_id: str | int,
+        text: str,
+        reply_markup: dict | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
         if not self.enabled:
             return
         payload = {'chat_id': chat_id, 'text': text}
         if reply_markup:
             payload['reply_markup'] = reply_markup
+        if parse_mode:
+            payload['parse_mode'] = parse_mode
         await self._post('sendMessage', payload)
 
     async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
