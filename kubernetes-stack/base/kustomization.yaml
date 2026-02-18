@@ -9,6 +9,7 @@ resources:
   - redis.yaml
   - minio.yaml
   - qdrant.yaml
+  - searxng.yaml
   - coordinator.yaml
   - executor.yaml
   - admin.yaml

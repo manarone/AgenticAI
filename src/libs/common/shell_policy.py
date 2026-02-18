@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from enum import Enum
@@ -16,8 +17,6 @@ class ShellPolicyResult:
     decision: ShellPolicyDecision
     reason: str
 
-
-SHELL_MUTATION_SCOPE = 'shell_mutation'
 
 _READ_ONLY_COMMANDS = {
     'ls',
@@ -74,24 +73,6 @@ _FIND_MUTATING_TOKENS = {
     '-fls',
 }
 _CONTROL_OPERATORS = {'&&', '||', ';', '|'}
-_SUDO_OPTIONS_WITH_VALUE = {
-    '-u',
-    '--user',
-    '-g',
-    '--group',
-    '-h',
-    '--host',
-    '-p',
-    '--prompt',
-    '-C',
-    '--close-from',
-    '-T',
-    '--command-timeout',
-    '-t',
-    '--type',
-    '-r',
-    '--role',
-}
 
 
 def _segments(command: str) -> list[str]:
@@ -104,7 +85,8 @@ def _segments(command: str) -> list[str]:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        return [stripped]
+        fallback_segments = [segment.strip() for segment in re.split(r'(?:&&|\|\||;|\|)', stripped) if segment.strip()]
+        return fallback_segments or [stripped]
 
     segments: list[str] = []
     current: list[str] = []
@@ -153,6 +135,8 @@ def _find_has_mutating_action(parts: list[str] | None) -> bool:
         lowered = token.lower()
         if lowered in _FIND_MUTATING_TOKENS:
             return True
+        if lowered.startswith('-exec') or lowered.startswith('-ok') or lowered.startswith('-fprint') or lowered.startswith('-fls'):
+            return True
     return False
 
 
@@ -186,59 +170,11 @@ def _env_subcommand(parts: list[str] | None) -> list[str]:
     return parts[i:] if i < len(parts) else []
 
 
-def _sudo_subcommand(parts: list[str] | None) -> list[str]:
-    if not parts or _command_name(parts[0]) != 'sudo':
-        return []
-
-    i = 1
-    while i < len(parts):
-        token = parts[i]
-        lowered = token.lower()
-
-        if token == '--':
-            i += 1
-            break
-
-        if lowered in _SUDO_OPTIONS_WITH_VALUE:
-            i += 2
-            continue
-
-        if token.startswith('-'):
-            i += 1
-            continue
-
-        break
-
-    return parts[i:] if i < len(parts) else []
-
-
-def _unwrap_prefixed_command(parts: list[str] | None) -> list[str]:
-    current = parts or []
-    while current:
-        first = _command_name(current[0])
-        if first == 'env':
-            unwrapped = _env_subcommand(current)
-            if not unwrapped:
-                return current
-            current = unwrapped
-            continue
-        if first == 'sudo':
-            unwrapped = _sudo_subcommand(current)
-            if not unwrapped:
-                return current
-            current = unwrapped
-            continue
-        return current
-    return current
-
-
 def _readonly_reason(command: str) -> str | None:
     segments = _segments(command)
     if not segments:
         return None
 
-    # Intentionally conservative: keep privileged wrappers (`sudo`/`env <subcommand>`) out of autorun.
-    # These can still be classified precisely by mutating/blocked paths.
     for segment in segments:
         parts = _tokens(segment)
         if parts is None:
@@ -266,9 +202,12 @@ def _readonly_reason(command: str) -> str | None:
 
 
 def _mutating_reason(command: str) -> str | None:
-    normalized = command.strip()
+    normalized = command.lower().strip()
     if not normalized:
         return 'empty_command'
+
+    if _tokens(command) is None:
+        return 'shell_parse_error'
 
     if _contains_shell_substitution(command):
         return 'shell_command_substitution'
@@ -276,21 +215,19 @@ def _mutating_reason(command: str) -> str | None:
     if _has_output_redirection(command):
         return 'output_redirection'
 
-    for segment in _segments(command):
+    for segment in _segments(normalized):
         parts = _tokens(segment)
         if parts is None:
             return 'shell_parse_error'
 
-        raw_first = _command_name(parts[0]) if parts else ''
-        invokes_env_subcommand = raw_first == 'env' and bool(_env_subcommand(parts))
-
-        normalized_parts = _unwrap_prefixed_command(parts)
-        first, second = _first_two_tokens(normalized_parts)
+        first, second = _first_two_tokens(parts)
         if first in _MUTATING_PREFIXES:
             return f'mutating_prefix_{first}'
-        if first == 'find' and _find_has_mutating_action(normalized_parts):
+        if first == 'find' and _find_has_mutating_action(parts):
             return 'find_mutating_action'
-        if first == 'sed' and _sed_has_in_place_option(normalized_parts):
+        if first == 'env' and _env_subcommand(parts):
+            return 'env_invokes_subcommand'
+        if first == 'sed' and second == '-i':
             return 'in_place_edit'
         if first in _SERVICE_MANAGERS:
             return f'mutating_tool_{first}'
@@ -308,8 +245,6 @@ def _mutating_reason(command: str) -> str | None:
             return f'mutating_tool_{first}_{second}'
         if first in _NETWORK_MUTATING_TOOLS:
             return f'mutating_tool_{first}'
-        if invokes_env_subcommand:
-            return f'env_invokes_subcommand_{first}' if first else 'env_invokes_subcommand'
 
     return None
 
@@ -354,22 +289,9 @@ def _has_output_redirection(command: str) -> bool:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        return False
+        return True
 
-    return any(token in {'>', '>>', '>|'} for token in tokens)
-
-
-def _sed_has_in_place_option(parts: list[str] | None) -> bool:
-    if not parts:
-        return False
-
-    for token in parts[1:]:
-        lowered = token.lower()
-        if lowered == '-i' or lowered == '--in-place' or lowered.startswith('--in-place='):
-            return True
-        if token.startswith('-') and not token.startswith('--') and 'i' in token[1:].lower():
-            return True
-    return False
+    return any(token in {'>', '>>'} for token in tokens)
 
 
 def _blocked_reason(command: str) -> str | None:
@@ -383,7 +305,8 @@ def _blocked_reason(command: str) -> str | None:
         if parts is None:
             continue
 
-        blocked_parts = _unwrap_prefixed_command(parts)
+        first = _command_name(parts[0])
+        blocked_parts = parts if first != 'env' else _env_subcommand(parts)
         if not blocked_parts:
             continue
 
@@ -409,26 +332,21 @@ def _blocked_reason(command: str) -> str | None:
 
 
 def _is_fork_bomb_command(command: str) -> bool:
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        return _looks_like_fork_bomb_text(command)
+    parts = _tokens(command)
+    if not parts:
+        return False
 
-    chunks: list[list[str]] = []
-    current: list[str] = []
-    for token in tokens:
-        if token in {'&&', '||', ';'}:
-            if current:
-                chunks.append(current)
-                current = []
+    candidates = [parts]
+    if _command_name(parts[0]) == 'env':
+        env_subcommand = _env_subcommand(parts)
+        if env_subcommand:
+            candidates.append(env_subcommand)
+
+    for candidate in candidates:
+        if not candidate:
             continue
-        current.append(token)
-    if current:
-        chunks.append(current)
 
-    for chunk in chunks:
-        candidate = _unwrap_prefixed_command(chunk)
-        if not candidate or candidate[0] != ':(){':
+        if candidate[0] != ':(){':
             continue
 
         has_pipe_ampersand = any(token == ':|:&' for token in candidate[1:])
@@ -443,10 +361,9 @@ def _is_root_delete_command(command: str) -> bool:
     for segment in _segments(command):
         parts = _tokens(segment)
         if parts is None:
-            if _looks_like_root_delete_text(segment):
-                return True
             continue
-        rm_parts = _unwrap_prefixed_command(parts)
+        first = _command_name(parts[0])
+        rm_parts = parts if first == 'rm' else (_env_subcommand(parts) if first == 'env' else [])
         if not rm_parts or _command_name(rm_parts[0]) != 'rm':
             continue
 
@@ -483,55 +400,6 @@ def _is_root_delete_command(command: str) -> bool:
     return False
 
 
-def _looks_like_fork_bomb_text(command: str) -> bool:
-    lowered = ' '.join(command.lower().split())
-    return ':(){' in lowered and ':|:&' in lowered and '};:' in lowered
-
-
-def _looks_like_root_delete_text(segment: str) -> bool:
-    lowered = ' '.join(segment.lower().split())
-    tokens = lowered.split()
-    if not tokens:
-        return False
-
-    command_index = -1
-    for index, token in enumerate(tokens):
-        if _command_name(token) == 'rm':
-            command_index = index
-            break
-    if command_index < 0:
-        return False
-
-    has_recursive = False
-    has_force = False
-    root_targeted = False
-
-    for token in tokens[command_index + 1 :]:
-        cleaned = token.strip("'\"")
-        if cleaned.startswith('-'):
-            if cleaned.startswith('--'):
-                if cleaned == '--recursive':
-                    has_recursive = True
-                if cleaned == '--force':
-                    has_force = True
-                if cleaned == '--no-preserve-root':
-                    root_targeted = True
-            else:
-                short_flags = cleaned[1:]
-                if 'r' in short_flags:
-                    has_recursive = True
-                if 'f' in short_flags:
-                    has_force = True
-            continue
-
-        if cleaned in {'/', '/*', '/.*', '/.', '/..'}:
-            root_targeted = True
-        elif cleaned.startswith('/*') or cleaned.startswith('/.*'):
-            root_targeted = True
-
-    return has_recursive and has_force and root_targeted
-
-
 def classify_shell_command(
     command: str,
     *,
@@ -539,10 +407,6 @@ def classify_shell_command(
     allow_hard_block_override: bool = False,
 ) -> ShellPolicyResult:
     normalized_mode = (mode or 'balanced').strip().lower()
-    unknown_mode = normalized_mode not in {'balanced', 'strict', 'permissive'}
-    if unknown_mode:
-        normalized_mode = 'strict'
-
     blocked_reason = _blocked_reason(command)
     if blocked_reason:
         if allow_hard_block_override:
@@ -556,18 +420,19 @@ def classify_shell_command(
     mutating_reason = _mutating_reason(command)
 
     if normalized_mode == 'permissive':
-        if mutating_reason:
-            return ShellPolicyResult(decision=ShellPolicyDecision.REQUIRE_APPROVAL, reason=mutating_reason)
-        if readonly_reason:
-            return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
-        return ShellPolicyResult(decision=ShellPolicyDecision.REQUIRE_APPROVAL, reason='permissive_mode_non_readonly')
-
-    if normalized_mode == 'strict':
-        if readonly_reason:
+        if readonly_reason and not mutating_reason:
             return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
         return ShellPolicyResult(
             decision=ShellPolicyDecision.REQUIRE_APPROVAL,
-            reason=mutating_reason or ('unknown_policy_mode' if unknown_mode else 'strict_mode_non_allowlisted'),
+            reason=mutating_reason or 'permissive_mode_unknown_command',
+        )
+
+    if normalized_mode == 'strict':
+        if readonly_reason and not mutating_reason:
+            return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
+        return ShellPolicyResult(
+            decision=ShellPolicyDecision.REQUIRE_APPROVAL,
+            reason=mutating_reason or 'strict_mode_non_allowlisted',
         )
 
     # balanced (default)

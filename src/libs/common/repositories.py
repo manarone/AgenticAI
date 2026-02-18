@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -307,10 +308,6 @@ class CoreRepository:
         )
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
-    async def get_approval_grant(self, grant_id: str) -> ApprovalGrant | None:
-        stmt = select(ApprovalGrant).where(ApprovalGrant.id == grant_id).limit(1)
-        return (await self.db.execute(stmt)).scalar_one_or_none()
-
     async def has_active_approval_grant(self, tenant_id: str, user_id: str, scope: str) -> bool:
         return (await self.get_active_approval_grant(tenant_id, user_id, scope)) is not None
 
@@ -321,6 +318,21 @@ class CoreRepository:
         scope: str,
         ttl_minutes: int,
     ) -> tuple[ApprovalGrant, bool]:
+        bind = None
+        get_bind = getattr(self.db, 'get_bind', None)
+        if callable(get_bind):
+            try:
+                bind = get_bind()
+            except Exception:
+                bind = None
+        if bind is not None and bind.dialect.name.startswith('postgresql'):
+            lock_key = int.from_bytes(
+                hashlib.sha256(f'{tenant_id}:{user_id}:{scope}'.encode('utf-8')).digest()[:8],
+                byteorder='big',
+                signed=True,
+            )
+            await self.db.execute(text('SELECT pg_advisory_xact_lock(:lock_key)'), {'lock_key': lock_key})
+
         now = datetime.utcnow()
         expires_at = now + timedelta(minutes=max(1, ttl_minutes))
 
@@ -367,7 +379,6 @@ class CoreRepository:
                 ApprovalGrant.tenant_id == tenant_id,
                 ApprovalGrant.user_id == user_id,
                 ApprovalGrant.revoked_at.is_(None),
-                ApprovalGrant.expires_at > now,
             )
         )
         if scope:

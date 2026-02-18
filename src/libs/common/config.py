@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     shell_remote_enabled: bool = Field(default=False, alias='SHELL_REMOTE_ENABLED')
     shell_timeout_seconds: int = Field(default=120, alias='SHELL_TIMEOUT_SECONDS')
     shell_env_allowlist: str = Field(default='PATH,HOME,LANG,LC_ALL,TERM,TZ', alias='SHELL_ENV_ALLOWLIST')
+    web_search_enabled: bool = Field(default=True, alias='WEB_SEARCH_ENABLED')
+    web_search_provider: str = Field(default='searxng', alias='WEB_SEARCH_PROVIDER')
+    searxng_base_url: str = Field(default='http://searxng:8080', alias='SEARXNG_BASE_URL')
+    web_search_timeout_seconds: int = Field(default=10, alias='WEB_SEARCH_TIMEOUT_SECONDS')
+    web_search_default_results: int = Field(default=5, alias='WEB_SEARCH_DEFAULT_RESULTS')
+    web_search_deep_results: int = Field(default=10, alias='WEB_SEARCH_DEEP_RESULTS')
+    web_search_max_results: int = Field(default=10, alias='WEB_SEARCH_MAX_RESULTS')
+    web_search_max_concurrent: int = Field(default=8, alias='WEB_SEARCH_MAX_CONCURRENT')
 
     @field_validator('shell_policy_mode')
     @classmethod

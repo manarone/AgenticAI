@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from libs.common.audit import append_audit
 from libs.common.config import get_settings
-from libs.common.db import AsyncSessionLocal
+from libs.common.db import AsyncSessionLocal, engine as db_engine
 from libs.common.enums import TaskStatus, TaskType
 from libs.common.metrics import (
     REQUEST_COUNTER,
@@ -23,8 +23,8 @@ from libs.common.metrics import (
 )
 from libs.common.models import Base
 from libs.common.repositories import CoreRepository
+from libs.common.shell_policy import ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskResult
-from libs.common.shell_policy import SHELL_MUTATION_SCOPE, ShellPolicyDecision, classify_shell_command
 from libs.common.skill_store import SkillStore
 from libs.common.state_machine import can_transition
 from libs.common.task_bus import get_task_bus
@@ -34,9 +34,9 @@ bus = get_task_bus()
 skill_store = SkillStore()
 WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+SHELL_MUTATION_SCOPE = 'shell_mutation'
 logger = logging.getLogger(__name__)
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
-_DEFAULT_SHELL_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 
 class NonRetriableExecutionError(RuntimeError):
@@ -54,8 +54,6 @@ def _shell_env() -> dict[str, str]:
         value = os.environ.get(name)
         if value is not None:
             env[name] = value
-    if 'PATH' not in env:
-        env['PATH'] = _DEFAULT_SHELL_PATH
     return env
 
 
@@ -115,8 +113,6 @@ async def _run_remote_shell(remote_host: str, command: str) -> str:
 
 async def _run_shell(repo: CoreRepository, task, envelope) -> str:
     command = str(task.payload.get('command', '')).strip()
-    if not command:
-        raise NonRetriableExecutionError('Empty shell command.')
     remote_host = str(task.payload.get('remote_host', '')).strip() or None
     shell_policy = classify_shell_command(
         command,
@@ -153,23 +149,8 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
 
     if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
         has_grant = await repo.has_active_approval_grant(task.tenant_id, task.user_id, scope=SHELL_MUTATION_SCOPE)
-        queued_grant_id = str(task.payload.get('grant_id', '')).strip()
-        has_queued_grant_proof = False
-        if queued_grant_id:
-            queued_grant = await repo.get_approval_grant(queued_grant_id)
-            if (
-                queued_grant is not None
-                and queued_grant.tenant_id == task.tenant_id
-                and queued_grant.user_id == task.user_id
-                and queued_grant.scope == SHELL_MUTATION_SCOPE
-                # Explicit revocation should invalidate both new and already-queued mutation tasks.
-                and queued_grant.revoked_at is None
-                and task.created_at <= queued_grant.expires_at
-            ):
-                has_queued_grant_proof = True
-
         has_direct_approval = envelope.approval_id is not None
-        if not has_grant and not has_direct_approval and not has_queued_grant_proof:
+        if not has_grant and not has_direct_approval:
             SHELL_DENIED_NO_GRANT_COUNTER.inc()
             await append_audit(
                 repo.db,
@@ -277,7 +258,9 @@ async def _execute_task(task, envelope, repo: CoreRepository) -> str:
             skill_name=task.payload.get('skill_name', '').strip(),
             skill_input=task.payload.get('input', '').strip(),
         )
-    raise RuntimeError(f'Unsupported task type: {task_type.value}')
+    if task_type == TaskType.WEB:
+        raise NonRetriableExecutionError('Web tasks are handled inline by coordinator and should not reach executor.')
+    raise NonRetriableExecutionError(f'Unsupported task type: {task_type.value}')
 
 
 async def _process_task_once(message_id: str, envelope) -> None:
@@ -298,16 +281,6 @@ async def _process_task_once(message_id: str, envelope) -> None:
 
         if can_transition(task.status, TaskStatus.DISPATCHING):
             await repo.update_task_status(task.id, TaskStatus.DISPATCHING)
-            await db.commit()
-            refreshed = await repo.get_task(task.id)
-            if refreshed is None:
-                await bus.ack_task(message_id)
-                return
-            task = refreshed
-
-        if task.status != TaskStatus.RUNNING and not can_transition(task.status, TaskStatus.RUNNING):
-            await bus.ack_task(message_id)
-            return
 
         attempts = await repo.increment_task_attempt(task.id)
         await repo.update_task_status(task.id, TaskStatus.RUNNING)
@@ -315,7 +288,6 @@ async def _process_task_once(message_id: str, envelope) -> None:
 
         try:
             output = await _execute_task(task, envelope, repo)
-            await db.commit()
             await bus.publish_result(
                 TaskResult(
                     task_id=envelope.task_id,
@@ -351,21 +323,17 @@ async def _process_task_once(message_id: str, envelope) -> None:
             else:
                 await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
                 await db.commit()
-                try:
-                    await bus.publish_result(
-                        TaskResult(
-                            task_id=envelope.task_id,
-                            tenant_id=envelope.tenant_id,
-                            user_id=envelope.user_id,
-                            success=False,
-                            output='Task failed',
-                            error=str(exc),
-                            created_at=datetime.utcnow(),
-                        )
+                await bus.publish_result(
+                    TaskResult(
+                        task_id=envelope.task_id,
+                        tenant_id=envelope.tenant_id,
+                        user_id=envelope.user_id,
+                        success=False,
+                        output='Task failed',
+                        error=str(exc),
+                        created_at=datetime.utcnow(),
                     )
-                except Exception:
-                    logger.exception('Failed to publish failure result for task %s after retry exhaustion', task.id)
-                    raise
+                )
                 TASK_COUNTER.labels(status='failed').inc()
 
         await db.commit()
@@ -404,7 +372,7 @@ async def _run_single_task_if_set() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
-        async with db.bind.begin() as conn:
+        async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
     if os.getenv('EXECUTOR_ONCE_TASK_ID', '').strip():

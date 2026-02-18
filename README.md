@@ -68,7 +68,7 @@ docker run --rm --env-file .env agentai:latest uvicorn services.admin.main:app -
 ```
 
 ### Docker Compose (recommended local test)
-This stack includes `postgres`, `redis`, `minio`, `qdrant`, `coordinator`, `executor`, `admin`, and a `telegram-poller`.
+This stack includes `postgres`, `redis`, `minio`, `qdrant`, `searxng`, `coordinator`, `executor`, `admin`, and a `telegram-poller`.
 The poller uses Telegram `getUpdates` and forwards updates to coordinator, so no public webhook URL is required for local testing.
 
 ```bash

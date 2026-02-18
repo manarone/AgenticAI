@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: searxng
+  template:
+    metadata:
+      labels:
+        app: searxng
+    spec:
+      containers:
+        - name: searxng
+          image: searxng/searxng@sha256:60055af6f2f1ca14b488d9c0f47a019d1dbaf15b4f6547a7194253bf2ab94744
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SEARXNG_BASE_URL
+              value: http://searxng:8080/
+          volumeMounts:
+            - name: searxng-settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: searxng-settings
+          secret:
+            name: searxng-settings
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: searxng-settings
+type: Opaque
+stringData:
+  settings.yml: |
+    use_default_settings: true
+    server:
+      secret_key: "replace-with-strong-searxng-secret"
+      limiter: false
+    search:
+      safe_search: 1
+      formats:
+        - html
+        - json
+    enabled_plugins:
+      - Basic Calculator
+      - Hash plugin
+      - Self Information
+      - Tracker URL remover
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+spec:
+  selector:
+    app: searxng
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
