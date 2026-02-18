@@ -7,9 +7,10 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,7 +52,8 @@ memory = get_memory_backend()
 llm = LLMClient()
 bus = get_task_bus()
 logger = logging.getLogger(__name__)
-runtime_system_prompt = load_runtime_prompt()
+runtime_prompt_base = load_runtime_prompt(settings=settings)
+app_timezone = ZoneInfo(settings.app_timezone)
 web_search_client = SearxNGClient(
     base_url=settings.searxng_base_url,
     timeout_seconds=settings.web_search_timeout_seconds,
@@ -71,6 +73,21 @@ DEEP_SEARCH_HINTS = (
     'compare',
     'comprehensive',
     'thorough',
+)
+TIME_SENSITIVE_TERMS = ('today', 'latest', 'current', 'now', 'breaking', 'recent')
+NEWS_INTENT_TERMS = ('news', 'headline', 'headlines', 'story', 'stories', 'happened')
+WEATHER_INTENT_TERMS = ('weather', 'forecast', 'temperature', 'rain', 'snow', 'wind')
+SEARCH_INTENT_PHRASES = (
+    'search and find me',
+    'search for',
+    'search',
+    'find me',
+    'find',
+    'look up',
+    'lookup',
+    'get me',
+    'show me',
+    'tell me',
 )
 
 
@@ -200,6 +217,89 @@ def _max_results_for_depth(depth: str) -> int:
     return max(1, min(preferred, settings.web_search_max_results))
 
 
+def _contains_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _starts_with_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
+    lowered = text.lower().strip()
+    return any(lowered == phrase or lowered.startswith(f'{phrase} ') for phrase in phrases)
+
+
+def _is_time_sensitive_query(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(rf'\b{re.escape(term)}\b', lowered) for term in TIME_SENSITIVE_TERMS)
+
+
+def _is_news_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(rf'\b{re.escape(term)}\b', lowered) for term in NEWS_INTENT_TERMS)
+
+
+def _is_weather_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(re.search(rf'\b{re.escape(term)}\b', lowered) for term in WEATHER_INTENT_TERMS)
+
+
+def _strip_search_intent_prefix(query: str) -> str:
+    stripped = query.strip()
+    lowered = stripped.lower()
+    for phrase in SEARCH_INTENT_PHRASES:
+        if lowered == phrase:
+            return ''
+        if lowered.startswith(f'{phrase} '):
+            return stripped[len(phrase) :].strip(" \t:-,")
+    return stripped
+
+
+def _build_web_payload(query: str, *, forced_nl_route: bool = False) -> dict:
+    cleaned = _strip_search_intent_prefix(query)
+    final_query = cleaned if cleaned else query.strip()
+    return {
+        'query': final_query,
+        'time_sensitive': _is_time_sensitive_query(final_query),
+        'news_intent': _is_news_intent(final_query),
+        'forced_nl_web_route': forced_nl_route,
+    }
+
+
+def _is_time_sensitive_web_nl_query(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered or lowered.startswith('/'):
+        return False
+    time_sensitive = _is_time_sensitive_query(lowered)
+    domain_sensitive = _is_news_intent(lowered) or _is_weather_intent(lowered)
+    if not (time_sensitive and domain_sensitive):
+        return False
+    if _contains_any_phrase(lowered, SEARCH_INTENT_PHRASES):
+        return True
+    return _starts_with_any_phrase(lowered, NEWS_INTENT_TERMS + WEATHER_INTENT_TERMS) or lowered.endswith('?')
+
+
+def _derive_web_search_hints(*, time_sensitive: bool, news_intent: bool) -> tuple[str | None, str | None]:
+    if not time_sensitive:
+        return None, None
+    categories = 'news' if news_intent else None
+    return 'day', categories
+
+
+def _format_runtime_time_context() -> str:
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(app_timezone)
+    return (
+        'Runtime Date Context:\n'
+        f'- Current UTC timestamp: {now_utc.isoformat(timespec="seconds")}\n'
+        f'- Current local timestamp ({settings.app_timezone}): {now_local.isoformat(timespec="seconds")}\n'
+        '- For requests about today/latest/current, do not claim recency unless supported by cited sources.\n'
+        '- If recency is uncertain, explicitly include a warning.'
+    )
+
+
+def _render_runtime_system_prompt() -> str:
+    return f'{runtime_prompt_base.rstrip()}\n\n{_format_runtime_time_context()}'
+
+
 def _sources_from_results(results: list[dict], *, limit: int = 5) -> list[tuple[str, str]]:
     sources: list[tuple[str, str]] = []
     for item in results:
@@ -281,6 +381,9 @@ async def _execute_web_search(
     query: str,
     depth: str,
     max_results: int | None,
+    time_range: str | None = None,
+    categories: str | None = None,
+    time_sensitive: bool = False,
 ) -> dict:
     if settings.web_search_provider.lower() != 'searxng':
         return {
@@ -288,6 +391,7 @@ async def _execute_web_search(
             'error': 'unsupported_web_provider',
             'user_notice': 'Web search provider is not configured.',
             'depth': 'balanced',
+            'time_sensitive': time_sensitive,
             'results': [],
         }
 
@@ -301,7 +405,14 @@ async def _execute_web_search(
         user_id=user_id,
         actor='coordinator',
         action='web_search_invoked',
-        details={'query': query, 'depth': normalized_depth, 'max_results': clamped_max},
+        details={
+            'query': query,
+            'depth': normalized_depth,
+            'max_results': clamped_max,
+            'time_range': time_range,
+            'categories': categories,
+            'time_sensitive': time_sensitive,
+        },
     )
 
     start = perf_counter()
@@ -310,6 +421,8 @@ async def _execute_web_search(
             query=query,
             depth=normalized_depth,
             max_results=clamped_max,
+            time_range=time_range,
+            categories=categories,
         )
     except (ValueError, WebSearchUnavailableError) as exc:
         elapsed = perf_counter() - start
@@ -326,10 +439,22 @@ async def _execute_web_search(
                 'depth': normalized_depth,
                 'error': exc.__class__.__name__,
                 'message': str(exc),
+                'time_range': time_range,
+                'categories': categories,
+                'time_sensitive': time_sensitive,
             },
         )
         notice = exc.user_message if isinstance(exc, WebSearchUnavailableError) else 'Live web search is unavailable.'
-        return {'ok': False, 'error': str(exc), 'user_notice': notice, 'depth': normalized_depth, 'results': []}
+        return {
+            'ok': False,
+            'error': str(exc),
+            'user_notice': notice,
+            'depth': normalized_depth,
+            'time_range': time_range,
+            'categories': categories,
+            'time_sensitive': time_sensitive,
+            'results': [],
+        }
 
     elapsed = perf_counter() - start
     WEB_SEARCH_REQUEST_COUNTER.labels(status='success', depth=normalized_depth).inc()
@@ -356,32 +481,98 @@ async def _execute_web_search(
             'depth': normalized_depth,
             'result_count': count,
             'top_urls': top_urls,
+            'time_range': time_range,
+            'categories': categories,
+            'time_sensitive': time_sensitive,
         },
     )
-    return {'ok': True, **result}
+    return {'ok': True, 'time_sensitive': time_sensitive, **result}
 
 
 def _build_web_search_registry(web_handler: Callable[[dict], Awaitable[dict]]) -> ToolRegistry:
     return build_default_tool_registry(web_handler, web_search_enabled=settings.web_search_enabled)
 
 
-def _format_web_command_reply(payload: dict) -> str:
-    results = payload.get('results')
-    if not isinstance(results, list) or not results:
-        return 'No web results found.'
+def _source_date_label(item: dict) -> str:
+    published = str(item.get('published_at', '') or '').strip()
+    if not published:
+        return 'unknown'
+    match = re.search(r'(\d{4}-\d{2}-\d{2})', published)
+    if match:
+        return match.group(1)
+    return published[:40]
 
-    lines = [f"Top web results for: {payload.get('query', '')}"]
-    for index, item in enumerate(results[:5], start=1):
+
+def _has_today_source(results: list[dict], *, now_local: datetime) -> bool:
+    today_label = now_local.date().isoformat()
+    for item in results:
+        if _source_date_label(item) == today_label:
+            return True
+    return False
+
+
+def _freshness_warning(results: list[dict], *, time_sensitive: bool, now_local: datetime) -> str | None:
+    if not time_sensitive:
+        return None
+    if not results:
+        return 'Warning: no source data was found to verify current information.'
+    unknown_count = sum(1 for item in results if _source_date_label(item) == 'unknown')
+    if unknown_count:
+        return (
+            'Warning: some sources do not expose publication dates, so currentness may be uncertain.'
+        )
+    if not _has_today_source(results, now_local=now_local):
+        return (
+            f'Warning: none of the cited sources clearly show {now_local.date().isoformat()} as a publish date.'
+        )
+    return None
+
+
+def _source_lines_with_dates(results: list[dict], *, limit: int = 5) -> list[str]:
+    lines = ['Sources:']
+    for item in results[:limit]:
         if not isinstance(item, dict):
             continue
-        title = str(item.get('title', '')).strip() or 'Untitled'
-        snippet = str(item.get('snippet', '')).strip()
-        if snippet:
-            snippet = f' - {snippet[:180]}'
-        lines.append(f'{index}. {title}{snippet}')
+        url = str(item.get('url', '')).strip()
+        title = str(item.get('title', '')).strip() or url or 'Untitled'
+        if not url:
+            continue
+        lines.append(f'- [{title}]({url}) (date: {_source_date_label(item)})')
+    return lines
 
-    response = '\n'.join(lines)
-    return _ensure_sources_section(response, _sources_from_results(results))
+
+def _format_web_command_reply(payload: dict) -> str:
+    results = payload.get('results')
+    normalized_results = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(app_timezone)
+    warning = _freshness_warning(
+        normalized_results,
+        time_sensitive=bool(payload.get('time_sensitive', False)),
+        now_local=now_local,
+    )
+
+    lines = [
+        f"Web summary for: {payload.get('query', '')}",
+        (
+            f'As of {now_local.isoformat(timespec="seconds")} ({settings.app_timezone}) '
+            f'/ {now_utc.isoformat(timespec="seconds")} UTC'
+        ),
+    ]
+    if warning:
+        lines.append(warning)
+
+    if not normalized_results:
+        lines.append('No web results found.')
+        return '\n'.join(lines)
+
+    lines.append('Summary:')
+    for item in normalized_results[:3]:
+        title = str(item.get('title', '')).strip() or 'Untitled'
+        snippet = str(item.get('snippet', '')).strip() or 'No snippet provided by source.'
+        lines.append(f'- {title}: {snippet[:220]}')
+    lines.extend(['', *_source_lines_with_dates(normalized_results)])
+    return '\n'.join(lines)
 
 
 async def _consume_results_forever() -> None:
@@ -483,7 +674,7 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
 
     if lowered.startswith('web_search:'):
         _, _, query = user_text.partition(':')
-        return TaskType.WEB, {'query': query.strip()}
+        return TaskType.WEB, _build_web_payload(query)
 
     if lowered.startswith('use web_search'):
         query = user_text[len('use web_search') :].strip(" \t:-,")
@@ -493,7 +684,10 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
                 query = query[len(prefix) :].strip(" \t:-,")
                 break
         if query:
-            return TaskType.WEB, {'query': query}
+            return TaskType.WEB, _build_web_payload(query)
+
+    if _is_time_sensitive_web_nl_query(user_text):
+        return TaskType.WEB, _build_web_payload(user_text, forced_nl_route=True)
 
     if lowered.startswith('shell@'):
         stripped = user_text.strip()
@@ -519,7 +713,7 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
 
     if lowered.startswith('web:'):
         _, _, query = user_text.partition(':')
-        return TaskType.WEB, {'query': query.strip()}
+        return TaskType.WEB, _build_web_payload(query)
 
     return None, {}
 
@@ -772,6 +966,12 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     return
 
                 depth = _infer_search_depth(query)
+                time_sensitive = bool(payload.get('time_sensitive', _is_time_sensitive_query(query)))
+                news_intent = bool(payload.get('news_intent', _is_news_intent(query)))
+                time_range, categories = _derive_web_search_hints(
+                    time_sensitive=time_sensitive,
+                    news_intent=news_intent,
+                )
                 web_payload = await _execute_web_search(
                     db=db,
                     tenant_id=identity.tenant_id,
@@ -779,12 +979,15 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     query=query,
                     depth=depth,
                     max_results=_max_results_for_depth(depth),
+                    time_range=time_range,
+                    categories=categories,
+                    time_sensitive=time_sensitive,
                 )
                 response = _format_web_command_reply(web_payload)
                 if not web_payload.get('ok', False):
                     notice = str(web_payload.get('user_notice', '')).strip()
                     fallback, input_tokens, output_tokens = await llm.chat(
-                        system_prompt=runtime_system_prompt,
+                        system_prompt=_render_runtime_system_prompt(),
                         user_prompt=f'User asked: {query}. Web search is unavailable; answer with best-effort non-live context and note possible staleness.',
                         memory=[],
                     )
@@ -822,6 +1025,12 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         max_results = requested
                     else:
                         max_results = _max_results_for_depth(depth)
+                    time_sensitive = _is_time_sensitive_query(query)
+                    news_intent = _is_news_intent(query)
+                    time_range, categories = _derive_web_search_hints(
+                        time_sensitive=time_sensitive,
+                        news_intent=news_intent,
+                    )
                     return await _execute_web_search(
                         db=db,
                         tenant_id=identity.tenant_id,
@@ -829,11 +1038,14 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         query=query,
                         depth=depth,
                         max_results=max_results,
+                        time_range=time_range,
+                        categories=categories,
+                        time_sensitive=time_sensitive,
                     )
 
                 registry = _build_web_search_registry(_web_tool_handler)
                 llm_result = await llm.chat_with_tools(
-                    system_prompt=runtime_system_prompt,
+                    system_prompt=_render_runtime_system_prompt(),
                     user_prompt=sanitized,
                     memory=context_blocks,
                     tools=registry.schemas(),

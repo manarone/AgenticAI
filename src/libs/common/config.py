@@ -1,4 +1,5 @@
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +9,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     app_env: str = Field(default='dev', alias='APP_ENV')
+    app_timezone: str = Field(default='UTC', alias='APP_TIMEZONE')
+    prompt_dir: str = Field(default='', alias='PROMPT_DIR')
 
     database_url: str = Field(default='sqlite+aiosqlite:///./agentai.db', alias='DATABASE_URL')
     redis_url: str = Field(default='redis://localhost:6379/0', alias='REDIS_URL')
@@ -75,6 +78,16 @@ class Settings(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in {'balanced', 'strict', 'permissive'}:
             raise ValueError('SHELL_POLICY_MODE must be one of: balanced, strict, permissive')
+        return normalized
+
+    @field_validator('app_timezone')
+    @classmethod
+    def _validate_app_timezone(cls, value: str) -> str:
+        normalized = value.strip() or 'UTC'
+        try:
+            ZoneInfo(normalized)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f'Unknown timezone: {normalized}') from exc
         return normalized
 
 

@@ -4,6 +4,8 @@ metadata:
   name: agentai-config
 data:
   APP_ENV: "prod"
+  APP_TIMEZONE: "UTC"
+  PROMPT_DIR: "/app/src/prompts"
   REDIS_URL: "redis://redis:6379/0"
   TASK_STREAM: "agentai:tasks"
   RESULT_STREAM: "agentai:results"
