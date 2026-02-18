@@ -1,9 +1,8 @@
 # Agent Workflow Rules
 
 ## PR Review Loop (Required)
-1. After opening or updating a PR, post comments that explicitly ping all review bots:
+1. After opening or updating a PR, post comments that explicitly ping both review bots:
    `@greptile review latest head <short_sha> please`
-   `@codex review latest head <short_sha> please`
    `@claude review latest head <short_sha> please`
 2. Wait for all bot responses on the latest head commit before merging or re-pinging.
 3. Treat bot findings and CI failures as blockers.
