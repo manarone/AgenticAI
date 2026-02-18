@@ -293,6 +293,10 @@ async def _process_task_once(message_id: str, envelope) -> None:
         if can_transition(task.status, TaskStatus.DISPATCHING):
             await repo.update_task_status(task.id, TaskStatus.DISPATCHING)
 
+        if task.status != TaskStatus.RUNNING and not can_transition(task.status, TaskStatus.RUNNING):
+            await bus.ack_task(message_id)
+            return
+
         attempts = await repo.increment_task_attempt(task.id)
         await repo.update_task_status(task.id, TaskStatus.RUNNING)
         await db.commit()
