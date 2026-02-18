@@ -63,10 +63,6 @@ _MUTATING_KEYWORDS = [
     r'\b(iptables|ufw|ifconfig|route|nmcli)\b',
 ]
 
-_BLOCK_PATTERNS = [
-    (r':\(\)\s*\{\s*:\|:\s*&\s*\};:', 'fork_bomb'),
-]
-
 _COMMAND_SUBSTITUTION_PATTERN = re.compile(r'(?<!\\)\$\(|(?<!\\)`')
 
 _FIND_MUTATING_TOKENS = {
@@ -256,6 +252,8 @@ def _has_output_redirection(command: str) -> bool:
 def _blocked_reason(command: str) -> str | None:
     if _is_root_delete_command(command):
         return 'rm_rf_root'
+    if _is_fork_bomb_command(command):
+        return 'fork_bomb'
 
     for segment in _segments(command):
         parts = _tokens(segment)
@@ -285,11 +283,33 @@ def _blocked_reason(command: str) -> str | None:
             if has_source and has_device_sink:
                 return 'dd_device_wipe'
 
-    normalized = command.lower().strip()
-    for pattern, reason in _BLOCK_PATTERNS:
-        if re.search(pattern, normalized):
-            return reason
     return None
+
+
+def _is_fork_bomb_command(command: str) -> bool:
+    parts = _tokens(command)
+    if not parts:
+        return False
+
+    candidates = [parts]
+    if _command_name(parts[0]) == 'env':
+        env_subcommand = _env_subcommand(parts)
+        if env_subcommand:
+            candidates.append(env_subcommand)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        if candidate[0] != ':(){':
+            continue
+
+        has_pipe_ampersand = any(token == ':|:&' for token in candidate[1:])
+        has_terminator = any(token == '};:' for token in candidate[1:])
+        if has_pipe_ampersand and has_terminator:
+            return True
+
+    return False
 
 
 def _is_root_delete_command(command: str) -> bool:

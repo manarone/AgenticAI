@@ -51,6 +51,17 @@ def test_power_operation_command_is_hard_blocked():
     assert result.reason == 'power_operation'
 
 
+def test_fork_bomb_pattern_is_hard_blocked():
+    result = classify_shell_command(':(){ :|:& };:')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'fork_bomb'
+
+
+def test_fork_bomb_text_in_argument_is_not_hard_blocked():
+    result = classify_shell_command("echo ':(){ :|:& };:'")
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+
+
 def test_quoted_redirection_symbol_does_not_trigger_mutation():
     result = classify_shell_command("grep 'a>b' /tmp/file.txt")
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
