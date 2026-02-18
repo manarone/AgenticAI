@@ -70,6 +70,11 @@ def test_env_wrapped_absolute_path_rm_rf_root_is_hard_blocked():
     assert result.reason == 'rm_rf_root'
 
 
+def test_rm_long_option_with_r_character_does_not_trigger_recursive_block():
+    result = classify_shell_command('rm --preserve-root -f /')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+
+
 def test_command_substitution_requires_approval():
     result = classify_shell_command('ls $(touch /tmp/pwn)')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL

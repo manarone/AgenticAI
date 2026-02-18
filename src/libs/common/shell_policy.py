@@ -252,10 +252,17 @@ def _is_root_delete_command(command: str) -> bool:
         for token in rm_parts[1:]:
             lowered = token.lower()
             if token.startswith('-'):
-                if lowered in {'--recursive', '-r', '-R'} or ('r' in token and token.startswith('-')):
-                    has_recursive = True
-                if lowered in {'--force', '-f'} or ('f' in token and token.startswith('-')):
-                    has_force = True
+                if lowered.startswith('--'):
+                    if lowered == '--recursive':
+                        has_recursive = True
+                    if lowered == '--force':
+                        has_force = True
+                else:
+                    short_flags = token[1:].lower()
+                    if 'r' in short_flags:
+                        has_recursive = True
+                    if 'f' in short_flags:
+                        has_force = True
                 if lowered == '--no-preserve-root':
                     root_targeted = True
                 continue
