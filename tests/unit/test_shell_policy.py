@@ -56,3 +56,15 @@ def test_env_wrapped_rm_rf_root_is_hard_blocked():
     result = classify_shell_command('env -i rm -rf /')
     assert result.decision == ShellPolicyDecision.BLOCKED
     assert result.reason == 'rm_rf_root'
+
+
+def test_absolute_path_rm_rf_root_is_hard_blocked():
+    result = classify_shell_command('/bin/rm -rf /')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'rm_rf_root'
+
+
+def test_env_wrapped_absolute_path_rm_rf_root_is_hard_blocked():
+    result = classify_shell_command('env -i /bin/rm -rf /')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'rm_rf_root'

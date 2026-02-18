@@ -95,11 +95,20 @@ def _tokens(segment: str) -> list[str]:
         return []
 
 
+def _command_name(token: str) -> str:
+    stripped = (token or '').strip()
+    if not stripped:
+        return ''
+    if '/' in stripped:
+        stripped = stripped.rstrip('/').rsplit('/', 1)[-1]
+    return stripped.lower()
+
+
 def _first_two_tokens(segment: str) -> tuple[str, str]:
     parts = _tokens(segment)
     if not parts:
         return '', ''
-    first = parts[0].lower()
+    first = _command_name(parts[0])
     second = parts[1].lower() if len(parts) > 1 else ''
     return first, second
 
@@ -115,7 +124,7 @@ def _find_has_mutating_action(parts: list[str]) -> bool:
 
 
 def _env_subcommand(parts: list[str]) -> list[str]:
-    if not parts or parts[0].lower() != 'env':
+    if not parts or _command_name(parts[0]) != 'env':
         return []
 
     i = 1
@@ -154,7 +163,7 @@ def _readonly_reason(command: str) -> str | None:
         if not parts:
             return None
 
-        first = parts[0].lower()
+        first = _command_name(parts[0])
         second = parts[1].lower() if len(parts) > 1 else ''
 
         if not first:
@@ -226,9 +235,9 @@ def _is_root_delete_command(command: str) -> bool:
         parts = _tokens(segment)
         if not parts:
             continue
-        first = parts[0].lower()
+        first = _command_name(parts[0])
         rm_parts = parts if first == 'rm' else (_env_subcommand(parts) if first == 'env' else [])
-        if not rm_parts or rm_parts[0].lower() != 'rm':
+        if not rm_parts or _command_name(rm_parts[0]) != 'rm':
             continue
 
         has_recursive = False

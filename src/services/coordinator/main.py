@@ -531,6 +531,9 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         if not identity or not approval or identity.user_id != approval.user_id:
             await telegram.answer_callback_query(callback_query_id, 'Approval not found or unauthorized.')
             return {'ok': True}
+        if approval.decision != ApprovalDecision.PENDING:
+            await telegram.answer_callback_query(callback_query_id, 'Approval already processed.')
+            return {'ok': True}
 
         decision = ApprovalDecision.APPROVED if action == 'approve' else ApprovalDecision.DENIED
         await repo.set_approval_decision(approval.id, decision)
