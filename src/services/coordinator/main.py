@@ -481,6 +481,20 @@ async def metrics():
 def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     lowered = user_text.lower().strip()
 
+    if lowered.startswith('web_search:'):
+        _, _, query = user_text.partition(':')
+        return TaskType.WEB, {'query': query.strip()}
+
+    if lowered.startswith('use web_search'):
+        query = user_text[len('use web_search') :].strip(" \t:-,")
+        lowered_query = query.lower()
+        for prefix in ('search and find me', 'search for', 'find me'):
+            if lowered_query.startswith(prefix):
+                query = query[len(prefix) :].strip(" \t:-,")
+                break
+        if query:
+            return TaskType.WEB, {'query': query}
+
     if lowered.startswith('shell@'):
         stripped = user_text.strip()
         shell_target = stripped[len('shell@') :].strip()
@@ -571,6 +585,18 @@ def _is_valid_remote_host(host: str) -> bool:
     return bool(_REMOTE_HOST_RE.fullmatch(normalized))
 
 
+def _matches_telegram_command(text: str, command: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    prefix = f'/{command}'
+    return (
+        normalized == prefix
+        or normalized.startswith(prefix + ' ')
+        or normalized.startswith(prefix + '@')
+    )
+
+
 async def _handle_start_command(
     repo: CoreRepository,
     db: AsyncSession,
@@ -608,6 +634,23 @@ async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, t
 
     lines = [f"{t.id[:8]} | {t.status.value} | {t.task_type}" for t in tasks[:10]]
     await _send_telegram_message(chat_id, 'Recent tasks:\n' + '\n'.join(lines))
+
+
+async def _handle_new_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
+    await repo.create_conversation(identity.tenant_id, identity.user_id)
+    await append_audit(
+        db,
+        tenant_id=identity.tenant_id,
+        user_id=identity.user_id,
+        actor='user',
+        action='conversation_reset',
+        details={'command': text.split(maxsplit=1)[0].lower()},
+    )
+    await db.commit()
+    await _send_telegram_message(
+        chat_id,
+        'Started a new conversation. Long-term memory is unchanged.',
+    )
 
 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
@@ -1170,7 +1213,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
     if not text:
         return {'ok': True}
 
-    if text.startswith('/start'):
+    if _matches_telegram_command(text, 'start'):
         await _handle_start_command(repo, db, chat_id, telegram_user_id, text)
         return {'ok': True}
 
@@ -1179,12 +1222,16 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         await _send_telegram_message(chat_id, 'This bot is private. Use /start <invite_code> first.')
         return {'ok': True}
 
-    if text.startswith('/status'):
+    if _matches_telegram_command(text, 'status'):
         await _handle_status_command(repo, identity, chat_id, text)
         await db.commit()
         return {'ok': True}
 
-    if text.startswith('/cancel'):
+    if _matches_telegram_command(text, 'new') or _matches_telegram_command(text, 'clear'):
+        await _handle_new_command(repo, db, identity, chat_id, text)
+        return {'ok': True}
+
+    if _matches_telegram_command(text, 'cancel'):
         await _handle_cancel_command(repo, db, identity, chat_id, text)
         return {'ok': True}
 
