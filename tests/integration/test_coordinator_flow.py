@@ -216,6 +216,43 @@ def test_news_command_does_not_reset_conversation(monkeypatch):
     assert not any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
+def test_new_command_with_botname_suffix_starts_new_conversation(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1315}, 'chat': {'id': 1315}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'first topic', 'from': {'id': 1315}, 'chat': {'id': 1315}}},
+        )
+        before = asyncio.run(_conversation_ids_for_user(1315))
+        assert len(before) == 1
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': '/new@assistantai', 'from': {'id': 1315}, 'chat': {'id': 1315}}},
+        )
+        assert resp.status_code == 200
+
+        after = asyncio.run(_conversation_ids_for_user(1315))
+        assert len(after) == 2
+        assert after[0] != after[1]
+
+    assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
+
+
 def test_destructive_flow_waits_for_approval(monkeypatch):
     from services.coordinator.main import app, telegram
 

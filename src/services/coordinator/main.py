@@ -590,7 +590,11 @@ def _matches_telegram_command(text: str, command: str) -> bool:
     if not normalized:
         return False
     prefix = f'/{command}'
-    return normalized == prefix or normalized.startswith(prefix + ' ')
+    return (
+        normalized == prefix
+        or normalized.startswith(prefix + ' ')
+        or normalized.startswith(prefix + '@')
+    )
 
 
 async def _handle_start_command(
