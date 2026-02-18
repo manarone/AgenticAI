@@ -20,6 +20,7 @@ class _FakeClient:
         self._response = response
         self._exc = exc
         self.calls = []
+        self.is_closed = False
 
     async def __aenter__(self):
         return self
@@ -36,6 +37,9 @@ class _FakeClient:
                 return _FakeResponse({'results': []})
             return self._response.pop(0)
         return self._response
+
+    async def aclose(self):
+        self.is_closed = True
 
 
 @pytest.mark.asyncio
@@ -97,3 +101,15 @@ async def test_deep_search_fetches_multiple_pages(monkeypatch):
 
     assert [call['kwargs']['params']['pageno'] for call in fake_client.calls] == [1, 2]
     assert [item['title'] for item in result['results']] == ['A', 'B']
+
+
+@pytest.mark.asyncio
+async def test_client_reused_across_calls(monkeypatch):
+    fake_client = _FakeClient(response=_FakeResponse({'results': []}))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *args, **kwargs: fake_client)
+
+    client = SearxNGClient(base_url='http://searxng:8080', timeout_seconds=3, max_results=3, max_concurrent=2)
+    await client.search('first')
+    await client.search('second')
+    assert len(fake_client.calls) == 2
+    await client.aclose()

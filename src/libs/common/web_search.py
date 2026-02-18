@@ -34,6 +34,7 @@ class SearxNGClient:
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.max_results = max(1, int(max_results))
         self._semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
+        self._client: httpx.AsyncClient | None = None
 
     @staticmethod
     def _normalize_query(query: str) -> str:
@@ -72,6 +73,17 @@ class SearxNGClient:
                 break
         return normalized_results
 
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or bool(getattr(self._client, 'is_closed', False)):
+            self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is None:
+            return
+        await self._client.aclose()
+        self._client = None
+
     async def search(self, query: str, *, depth: str = 'balanced', max_results: int | None = None) -> dict:
         normalized_query = self._normalize_query(query)
         if not normalized_query:
@@ -83,27 +95,27 @@ class SearxNGClient:
 
         try:
             async with self._semaphore:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                    aggregated: list[dict] = []
-                    for page in range(1, pages + 1):
-                        response = await client.get(
-                            f'{self.base_url}/search',
-                            params={
-                                'q': normalized_query,
-                                'format': 'json',
-                                'safesearch': '1',
-                                'pageno': page,
-                            },
-                            headers={'Accept': 'application/json'},
-                        )
-                        response.raise_for_status()
-                        payload = response.json()
-                        raw_results = payload.get('results') if isinstance(payload, dict) else None
-                        if not isinstance(raw_results, list):
-                            continue
-                        aggregated.extend(raw_results)
-                        if len(self._normalize_results(aggregated, limit=limit)) >= limit:
-                            break
+                client = self._get_client()
+                aggregated: list[dict] = []
+                for page in range(1, pages + 1):
+                    response = await client.get(
+                        f'{self.base_url}/search',
+                        params={
+                            'q': normalized_query,
+                            'format': 'json',
+                            'safesearch': '1',
+                            'pageno': page,
+                        },
+                        headers={'Accept': 'application/json'},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    raw_results = payload.get('results') if isinstance(payload, dict) else None
+                    if not isinstance(raw_results, list):
+                        continue
+                    aggregated.extend(raw_results)
+                    if len(self._normalize_results(aggregated, limit=limit)) >= limit:
+                        break
         except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
             raise WebSearchUnavailableError() from exc
 

@@ -15,6 +15,13 @@ def test_ensure_sources_section_appends_when_sources_header_is_only_in_code_bloc
     assert '- [New Source](https://new.example)' in updated
 
 
+def test_ensure_sources_section_appends_when_sources_header_is_only_in_tilde_code_block():
+    text = "Answer text\n~~~md\nSources: [Example](https://example.com)\n~~~"
+    updated = _ensure_sources_section(text, [('New Source', 'https://new.example')])
+    assert updated.count('Sources:') == 2
+    assert '- [New Source](https://new.example)' in updated
+
+
 def test_collect_web_failure_notice_treats_missing_ok_as_failure():
     records = [
         ToolExecutionRecord(

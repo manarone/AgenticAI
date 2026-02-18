@@ -63,6 +63,7 @@ web_search_client = SearxNGClient(
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
 SHELL_MUTATION_SCOPE = 'shell_mutation'
+_REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 DEEP_SEARCH_HINTS = (
     'deep research',
     'deep-research',
@@ -206,7 +207,7 @@ def _has_sources_header_outside_code_blocks(text: str) -> bool:
     in_fence = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith('```'):
+        if stripped.startswith('```') or stripped.startswith('~~~'):
             in_fence = not in_fence
             continue
         if in_fence:
@@ -431,6 +432,7 @@ async def lifespan(app: FastAPI):
     result_task = asyncio.create_task(_consume_results_forever())
     app.state.result_task = result_task
     yield
+    await web_search_client.aclose()
     result_task.cancel()
     with suppress(asyncio.CancelledError):
         await result_task
@@ -460,7 +462,7 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
         if parsed:
             remote_host, command = parsed
             return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
-        return TaskType.SHELL, {'command': shell_target, 'remote_parse_error': True}
+        return TaskType.SHELL, {'raw_target': shell_target, 'remote_parse_error': True}
 
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
@@ -492,7 +494,7 @@ def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
     if bracketed:
         host = bracketed.group('host').strip()
         command = bracketed.group('command').strip()
-        if host and command:
+        if host and command and _is_valid_remote_host(host):
             return host, command
 
     first_space = next((index for index, ch in enumerate(target) if ch.isspace()), -1)
@@ -501,14 +503,14 @@ def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
         if sep > 0:
             host = target[:sep].strip()
             command = target[sep + 1 :].strip()
-            if host and command and all(not ch.isspace() for ch in host):
+            if host and command and all(not ch.isspace() for ch in host) and _is_valid_remote_host(host):
                 return host, command
 
     host_port = re.match(r'^(?P<host>[^:\s]+):(?P<port>\d+):(?P<command>.+)$', target)
     if host_port:
         host = f"{host_port.group('host')}:{host_port.group('port')}"
         command = host_port.group('command').strip()
-        if command:
+        if command and _is_valid_remote_host(host):
             return host, command
 
     # For unbracketed IPv6 hosts, prefer the right-most split whose host parses as IPv6.
@@ -521,16 +523,26 @@ def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
             continue
         try:
             ipaddress.IPv6Address(host)
-            return host, command
+            if _is_valid_remote_host(host):
+                return host, command
         except ValueError:
             continue
 
     host, sep, command = target.partition(':')
     host = host.strip()
     command = command.strip()
-    if sep and host and command:
+    if sep and host and command and _is_valid_remote_host(host):
         return host, command
     return None
+
+
+def _is_valid_remote_host(host: str) -> bool:
+    normalized = host.strip()
+    if not normalized:
+        return False
+    if normalized.startswith('-'):
+        return False
+    return bool(_REMOTE_HOST_RE.fullmatch(normalized))
 
 
 async def _handle_start_command(

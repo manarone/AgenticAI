@@ -40,3 +40,9 @@ def test_parse_shell_remote_invalid_target_sets_parse_error():
     task_type, payload = _parse_task('shell@not-a-valid-remote-target')
     assert task_type == TaskType.SHELL
     assert payload['remote_parse_error'] is True
+
+
+def test_parse_shell_remote_invalid_host_chars_sets_parse_error():
+    task_type, payload = _parse_task('shell@./badhost:uname -a')
+    assert task_type == TaskType.SHELL
+    assert payload['remote_parse_error'] is True
