@@ -74,3 +74,18 @@ async def test_executor_remote_shell_disabled_by_default():
     _, result = results[-1]
     assert result.success is False
     assert 'remote shell execution is disabled' in (result.error or '').lower()
+
+
+async def test_executor_rejects_remote_host_option_injection(monkeypatch):
+    from services.executor import main as executor_main
+
+    monkeypatch.setattr(executor_main.settings, 'shell_remote_enabled', True)
+    _, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': '-oProxyCommand=bad'})
+    await executor_main._process_task_once('1-0', envelope)
+    await executor_main._process_task_once('2-0', envelope)
+
+    results = await executor_main.bus.read_results(consumer_name='test-remote-injection', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is False
+    assert 'invalid remote host' in (result.error or '').lower()
