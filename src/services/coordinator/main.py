@@ -481,6 +481,23 @@ async def metrics():
 def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     lowered = user_text.lower().strip()
 
+    if lowered.startswith('web_search:'):
+        _, _, query = user_text.partition(':')
+        return TaskType.WEB, {'query': query.strip()}
+
+    if lowered.startswith('use web_search'):
+        query = user_text[len('use web_search') :].strip(" \t:-,")
+        lowered_query = query.lower()
+        if lowered_query.startswith('was a new capability added'):
+            query = query[len('was a new capability added') :].strip(" \t:-,")
+            lowered_query = query.lower()
+        for prefix in ('search and find me', 'search for', 'find me'):
+            if lowered_query.startswith(prefix):
+                query = query[len(prefix) :].strip(" \t:-,")
+                break
+        if query:
+            return TaskType.WEB, {'query': query}
+
     if lowered.startswith('shell@'):
         stripped = user_text.strip()
         shell_target = stripped[len('shell@') :].strip()
@@ -608,6 +625,23 @@ async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, t
 
     lines = [f"{t.id[:8]} | {t.status.value} | {t.task_type}" for t in tasks[:10]]
     await _send_telegram_message(chat_id, 'Recent tasks:\n' + '\n'.join(lines))
+
+
+async def _handle_new_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
+    await repo.create_conversation(identity.tenant_id, identity.user_id)
+    await append_audit(
+        db,
+        tenant_id=identity.tenant_id,
+        user_id=identity.user_id,
+        actor='user',
+        action='conversation_reset',
+        details={'command': text.split(maxsplit=1)[0].lower()},
+    )
+    await db.commit()
+    await _send_telegram_message(
+        chat_id,
+        'Started a new conversation. Long-term memory is unchanged.',
+    )
 
 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
@@ -1182,6 +1216,10 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
     if text.startswith('/status'):
         await _handle_status_command(repo, identity, chat_id, text)
         await db.commit()
+        return {'ok': True}
+
+    if text.startswith('/new') or text.startswith('/clear'):
+        await _handle_new_command(repo, db, identity, chat_id, text)
         return {'ok': True}
 
     if text.startswith('/cancel'):

@@ -143,12 +143,18 @@ class CoreRepository:
             await self.db.execute(
                 select(Conversation).where(
                     and_(Conversation.tenant_id == tenant_id, Conversation.user_id == user_id)
-                ).limit(1)
+                ).order_by(Conversation.created_at.desc()).limit(1)
             )
         ).scalar_one_or_none()
         if convo:
             return convo
 
+        convo = Conversation(tenant_id=tenant_id, user_id=user_id)
+        self.db.add(convo)
+        await self.db.flush()
+        return convo
+
+    async def create_conversation(self, tenant_id: str, user_id: str) -> Conversation:
         convo = Conversation(tenant_id=tenant_id, user_id=user_id)
         self.db.add(convo)
         await self.db.flush()

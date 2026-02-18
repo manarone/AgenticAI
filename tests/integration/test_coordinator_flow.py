@@ -4,10 +4,12 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from libs.common.db import AsyncSessionLocal
 from libs.common.enums import TaskStatus
 from libs.common.llm import LLMToolChatResult, ToolExecutionRecord
+from libs.common.models import Conversation
 from libs.common.repositories import CoreRepository
 from libs.common.schemas import TaskResult
 from libs.common.web_search import WebSearchUnavailableError
@@ -60,6 +62,20 @@ async def _create_task_for_user(telegram_user_id: int, *, status: TaskStatus, pa
         return task, identity
 
 
+async def _conversation_ids_for_user(telegram_user_id: int) -> list[str]:
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        identity = await repo.get_identity(str(telegram_user_id))
+        if identity is None:
+            return []
+        result = await db.execute(
+            select(Conversation.id)
+            .where(Conversation.tenant_id == identity.tenant_id, Conversation.user_id == identity.user_id)
+            .order_by(Conversation.created_at.desc())
+        )
+        return [row[0] for row in result.all()]
+
+
 def test_start_and_direct_response(monkeypatch):
     from services.coordinator.main import app, telegram
 
@@ -95,6 +111,80 @@ def test_start_and_direct_response(monkeypatch):
 
     assert any('accepted' in m['text'].lower() for m in sent_messages)
     assert any('mvp fallback response' in m['text'].lower() for m in sent_messages)
+
+
+def test_new_command_starts_new_conversation(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1311}, 'chat': {'id': 1311}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'first topic', 'from': {'id': 1311}, 'chat': {'id': 1311}}},
+        )
+        before = asyncio.run(_conversation_ids_for_user(1311))
+        assert len(before) == 1
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': '/new', 'from': {'id': 1311}, 'chat': {'id': 1311}}},
+        )
+        assert resp.status_code == 200
+
+        after = asyncio.run(_conversation_ids_for_user(1311))
+        assert len(after) == 2
+        assert after[0] != after[1]
+
+    assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
+
+
+def test_clear_command_alias_starts_new_conversation(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1312}, 'chat': {'id': 1312}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'first topic', 'from': {'id': 1312}, 'chat': {'id': 1312}}},
+        )
+        before = asyncio.run(_conversation_ids_for_user(1312))
+        assert len(before) == 1
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': '/clear', 'from': {'id': 1312}, 'chat': {'id': 1312}}},
+        )
+        assert resp.status_code == 200
+
+        after = asyncio.run(_conversation_ids_for_user(1312))
+        assert len(after) == 2
+        assert after[0] != after[1]
+
+    assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
 def test_destructive_flow_waits_for_approval(monkeypatch):
@@ -649,6 +739,51 @@ def test_web_command_returns_sources(monkeypatch):
     assert 'top web results for:' in final_msg.lower()
     assert 'sources:' in final_msg.lower()
     assert 'https://a.example' in final_msg
+
+
+def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
+    from services.coordinator.main import app, telegram, web_search_client
+
+    sent_messages = []
+    seen_queries = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_search(query, *, depth='balanced', max_results=None):
+        seen_queries.append(query)
+        return {
+            'query': query,
+            'depth': depth,
+            'results': [
+                {'title': 'MV Weather', 'url': 'https://weather.example/mv', 'snippet': 'Sunny and mild'},
+            ],
+        }
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(web_search_client, 'search', fake_search)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1313}, 'chat': {'id': 1313}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={
+                'message': {
+                    'text': 'use web_search was a new capability added, search and find me the weather in mountain view california today',
+                    'from': {'id': 1313},
+                    'chat': {'id': 1313},
+                }
+            },
+        )
+        assert resp.status_code == 200
+
+    assert seen_queries
+    assert 'weather in mountain view california today' in seen_queries[-1].lower()
+    assert any('top web results for:' in m['text'].lower() for m in sent_messages)
 
 
 def test_web_command_fail_open_notice(monkeypatch):
