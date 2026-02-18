@@ -67,6 +67,12 @@ def test_fork_bomb_pattern_is_hard_blocked():
     assert result.reason == 'fork_bomb'
 
 
+def test_fork_bomb_pattern_is_hard_blocked_when_chained():
+    result = classify_shell_command('echo safe && :(){ :|:& };:')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'fork_bomb'
+
+
 def test_fork_bomb_text_in_argument_is_not_hard_blocked():
     result = classify_shell_command("echo ':(){ :|:& };:'")
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
@@ -112,6 +118,18 @@ def test_env_wrapped_absolute_path_rm_rf_root_is_hard_blocked():
     assert result.reason == 'rm_rf_root'
 
 
+def test_sudo_wrapped_rm_rf_root_is_hard_blocked():
+    result = classify_shell_command('sudo rm -rf /')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'rm_rf_root'
+
+
+def test_sudo_with_user_wrapped_rm_rf_root_is_hard_blocked():
+    result = classify_shell_command('sudo -u root rm -rf /')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'rm_rf_root'
+
+
 def test_rm_long_option_with_r_character_does_not_trigger_recursive_block():
     result = classify_shell_command('rm --preserve-root -f /')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
@@ -147,3 +165,8 @@ def test_malformed_shell_requires_approval():
 def test_bare_env_is_readonly():
     result = classify_shell_command('env')
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_permissive_mode_non_readonly_still_requires_approval():
+    result = classify_shell_command('python3 -c "print(1)"', mode='permissive')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL

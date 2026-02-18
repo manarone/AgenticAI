@@ -73,6 +73,24 @@ _FIND_MUTATING_TOKENS = {
     '-fls',
 }
 _CONTROL_OPERATORS = {'&&', '||', ';', '|'}
+_SUDO_OPTIONS_WITH_VALUE = {
+    '-u',
+    '--user',
+    '-g',
+    '--group',
+    '-h',
+    '--host',
+    '-p',
+    '--prompt',
+    '-C',
+    '--close-from',
+    '-T',
+    '--command-timeout',
+    '-t',
+    '--type',
+    '-r',
+    '--role',
+}
 
 
 def _segments(command: str) -> list[str]:
@@ -167,6 +185,52 @@ def _env_subcommand(parts: list[str] | None) -> list[str]:
         break
 
     return parts[i:] if i < len(parts) else []
+
+
+def _sudo_subcommand(parts: list[str] | None) -> list[str]:
+    if not parts or _command_name(parts[0]) != 'sudo':
+        return []
+
+    i = 1
+    while i < len(parts):
+        token = parts[i]
+        lowered = token.lower()
+
+        if token == '--':
+            i += 1
+            break
+
+        if lowered in _SUDO_OPTIONS_WITH_VALUE:
+            i += 2
+            continue
+
+        if token.startswith('-'):
+            i += 1
+            continue
+
+        break
+
+    return parts[i:] if i < len(parts) else []
+
+
+def _unwrap_prefixed_command(parts: list[str] | None) -> list[str]:
+    current = parts or []
+    while current:
+        first = _command_name(current[0])
+        if first == 'env':
+            unwrapped = _env_subcommand(current)
+            if not unwrapped:
+                return current
+            current = unwrapped
+            continue
+        if first == 'sudo':
+            unwrapped = _sudo_subcommand(current)
+            if not unwrapped:
+                return current
+            current = unwrapped
+            continue
+        return current
+    return current
 
 
 def _readonly_reason(command: str) -> str | None:
@@ -304,8 +368,7 @@ def _blocked_reason(command: str) -> str | None:
         if parts is None:
             continue
 
-        first = _command_name(parts[0])
-        blocked_parts = parts if first != 'env' else _env_subcommand(parts)
+        blocked_parts = _unwrap_prefixed_command(parts)
         if not blocked_parts:
             continue
 
@@ -331,21 +394,26 @@ def _blocked_reason(command: str) -> str | None:
 
 
 def _is_fork_bomb_command(command: str) -> bool:
-    parts = _tokens(command)
-    if not parts:
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
         return False
 
-    candidates = [parts]
-    if _command_name(parts[0]) == 'env':
-        env_subcommand = _env_subcommand(parts)
-        if env_subcommand:
-            candidates.append(env_subcommand)
-
-    for candidate in candidates:
-        if not candidate:
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in {'&&', '||', ';'}:
+            if current:
+                chunks.append(current)
+                current = []
             continue
+        current.append(token)
+    if current:
+        chunks.append(current)
 
-        if candidate[0] != ':(){':
+    for chunk in chunks:
+        candidate = _unwrap_prefixed_command(chunk)
+        if not candidate or candidate[0] != ':(){':
             continue
 
         has_pipe_ampersand = any(token == ':|:&' for token in candidate[1:])
@@ -361,8 +429,7 @@ def _is_root_delete_command(command: str) -> bool:
         parts = _tokens(segment)
         if parts is None:
             continue
-        first = _command_name(parts[0])
-        rm_parts = parts if first == 'rm' else (_env_subcommand(parts) if first == 'env' else [])
+        rm_parts = _unwrap_prefixed_command(parts)
         if not rm_parts or _command_name(rm_parts[0]) != 'rm':
             continue
 
@@ -421,7 +488,9 @@ def classify_shell_command(
     if normalized_mode == 'permissive':
         if mutating_reason:
             return ShellPolicyResult(decision=ShellPolicyDecision.REQUIRE_APPROVAL, reason=mutating_reason)
-        return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason='permissive_mode')
+        if readonly_reason:
+            return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
+        return ShellPolicyResult(decision=ShellPolicyDecision.REQUIRE_APPROVAL, reason='permissive_mode_non_readonly')
 
     if normalized_mode == 'strict':
         if readonly_reason:
