@@ -153,8 +153,6 @@ def _find_has_mutating_action(parts: list[str] | None) -> bool:
         lowered = token.lower()
         if lowered in _FIND_MUTATING_TOKENS:
             return True
-        if lowered.startswith('-exec') or lowered.startswith('-ok') or lowered.startswith('-fprint') or lowered.startswith('-fls'):
-            return True
     return False
 
 

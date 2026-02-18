@@ -94,6 +94,11 @@ def test_find_readonly_path_is_autorun():
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
 
 
+def test_find_executable_predicate_is_readonly():
+    result = classify_shell_command('find /tmp -executable -type f')
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
 def test_find_delete_requires_approval():
     result = classify_shell_command('find /tmp -delete')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
