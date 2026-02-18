@@ -48,3 +48,4 @@ async def test_executor_retries_then_fails():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts >= 2
+        assert updated.status == TaskStatus.FAILED

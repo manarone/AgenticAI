@@ -333,6 +333,7 @@ async def _process_task_once(message_id: str, envelope) -> None:
                 await bus.publish_task(envelope)
                 TASK_COUNTER.labels(status='retry').inc()
             else:
+                await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
                 await db.commit()
                 await bus.publish_result(
                     TaskResult(
