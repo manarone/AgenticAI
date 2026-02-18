@@ -47,6 +47,8 @@ job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
+
+
 def _maybe_launch_executor_job(task_id: str) -> None:
     if not settings.launch_executor_job:
         return
