@@ -68,3 +68,9 @@ def test_parse_non_time_sensitive_news_stays_non_web():
     task_type, payload = _parse_task('tell me ai news')
     assert task_type is None
     assert payload == {}
+
+
+def test_parse_research_word_does_not_trigger_search_phrase_match():
+    task_type, payload = _parse_task('please research weather patterns today')
+    assert task_type is None
+    assert payload == {}

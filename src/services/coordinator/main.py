@@ -219,7 +219,11 @@ def _max_results_for_depth(depth: str) -> int:
 
 def _contains_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
     lowered = text.lower()
-    return any(phrase in lowered for phrase in phrases)
+    for phrase in phrases:
+        escaped = re.escape(phrase).replace(r'\ ', r'\s+')
+        if re.search(rf'\b{escaped}\b', lowered):
+            return True
+    return False
 
 
 def _starts_with_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
@@ -516,15 +520,16 @@ def _freshness_warning(results: list[dict], *, time_sensitive: bool, now_local: 
         return None
     if not results:
         return 'Warning: no source data was found to verify current information.'
+    warnings: list[str] = []
     unknown_count = sum(1 for item in results if _source_date_label(item) == 'unknown')
     if unknown_count:
-        return (
-            'Warning: some sources do not expose publication dates, so currentness may be uncertain.'
-        )
+        warnings.append('some sources do not expose publication dates, so currentness may be uncertain')
     if not _has_today_source(results, now_local=now_local):
-        return (
-            f'Warning: none of the cited sources clearly show {now_local.date().isoformat()} as a publish date.'
+        warnings.append(
+            f'none of the cited sources clearly show {now_local.date().isoformat()} as a publish date'
         )
+    if warnings:
+        return f"Warning: {'; '.join(warnings)}."
     return None
 
 

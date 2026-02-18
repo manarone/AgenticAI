@@ -63,6 +63,8 @@ def test_format_web_command_reply_includes_warning_and_dated_sources_for_time_se
     rendered = _format_web_command_reply(payload)
     assert 'as of' in rendered.lower()
     assert 'warning:' in rendered.lower()
+    assert 'do not expose publication dates' in rendered.lower()
+    assert 'none of the cited sources clearly show' in rendered.lower()
     assert 'sources:' in rendered.lower()
     assert '(date: unknown)' in rendered
     assert '(date: 2026-02-17)' in rendered
