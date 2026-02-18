@@ -96,6 +96,7 @@ async def _run_remote_shell(remote_host: str, command: str) -> str:
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_shell_env(),
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=settings.shell_timeout_seconds)

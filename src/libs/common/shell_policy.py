@@ -419,9 +419,12 @@ def classify_shell_command(
     mutating_reason = _mutating_reason(command)
 
     if normalized_mode == 'permissive':
-        if mutating_reason:
-            return ShellPolicyResult(decision=ShellPolicyDecision.REQUIRE_APPROVAL, reason=mutating_reason)
-        return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason='permissive_mode')
+        if readonly_reason and not mutating_reason:
+            return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
+        return ShellPolicyResult(
+            decision=ShellPolicyDecision.REQUIRE_APPROVAL,
+            reason=mutating_reason or 'permissive_mode_unknown_command',
+        )
 
     if normalized_mode == 'strict':
         if readonly_reason:

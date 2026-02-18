@@ -147,3 +147,14 @@ def test_malformed_shell_requires_approval():
 def test_bare_env_is_readonly():
     result = classify_shell_command('env')
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_permissive_unknown_command_requires_approval():
+    result = classify_shell_command('curl https://example.com', mode='permissive')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'permissive_mode_unknown_command'
+
+
+def test_permissive_readonly_stays_autorun():
+    result = classify_shell_command('ls -la', mode='permissive')
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN

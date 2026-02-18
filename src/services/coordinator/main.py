@@ -202,10 +202,24 @@ def _sources_from_results(results: list[dict], *, limit: int = 5) -> list[tuple[
     return sources
 
 
+def _has_sources_header_outside_code_blocks(text: str) -> bool:
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.match(r'(?i)^sources:\s*', stripped):
+            return True
+    return False
+
+
 def _ensure_sources_section(text: str, sources: list[tuple[str, str]]) -> str:
     if not sources:
         return text
-    if re.search(r'(?im)^sources:', text):
+    if _has_sources_header_outside_code_blocks(text):
         return text
     lines = ['Sources:']
     for title, url in sources:
