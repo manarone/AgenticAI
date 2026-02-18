@@ -388,16 +388,31 @@ async def _consume_results_forever() -> None:
                         continue
 
                     next_status = TaskStatus.SUCCEEDED if result.success else TaskStatus.FAILED
-                    if not can_transition(task.status, next_status):
+                    if task.status == next_status and (task.result or '') == (result.output or '') and (
+                        task.error or ''
+                    ) == (result.error or ''):
                         await bus.ack_result(message_id)
                         continue
 
-                    updated = await repo.update_task_status(
-                        task_id=task.id,
-                        status=next_status,
-                        result=result.output,
-                        error=result.error,
-                    )
+                    updated = None
+                    if can_transition(task.status, next_status):
+                        updated = await repo.update_task_status(
+                            task_id=task.id,
+                            status=next_status,
+                            result=result.output,
+                            error=result.error,
+                        )
+                    elif task.status == next_status:
+                        # Executor may have already marked terminal status before publishing the result.
+                        updated = await repo.update_task_status(
+                            task_id=task.id,
+                            status=task.status,
+                            result=result.output,
+                            error=result.error,
+                        )
+                    else:
+                        await bus.ack_result(message_id)
+                        continue
                     if updated:
                         await repo.add_message(task.tenant_id, task.user_id, task.conversation_id, 'assistant', result.output)
                         identity = await repo.get_identity_by_user_id(task.user_id)
@@ -910,8 +925,16 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 approval_id=UUID(approval_id) if approval_id else None,
                 created_at=datetime.utcnow(),
             )
-            await bus.publish_task(envelope)
-            _maybe_launch_executor_job(task.id)
+            published = await _publish_task_with_recovery(
+                repo,
+                db,
+                task,
+                envelope,
+                chat_id,
+                notify_text=f'Task {task.id[:8]} could not be queued. Please retry.',
+            )
+            if not published:
+                return
 
             await append_audit(
                 db,
@@ -942,8 +965,16 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         approval_id=UUID(approval_id),
         created_at=datetime.utcnow(),
     )
-    await bus.publish_task(envelope)
-    _maybe_launch_executor_job(task.id)
+    published = await _publish_task_with_recovery(
+        repo,
+        db,
+        task,
+        envelope,
+        chat_id,
+        notify_text=f'Task {task.id[:8]} could not be queued after approval. Please retry.',
+    )
+    if not published:
+        return
     await append_audit(
         db,
         tenant_id=task.tenant_id,
@@ -953,6 +984,40 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         details={'task_id': task.id, 'task_type': task.task_type, 'risk_tier': risk_tier.value},
     )
     await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+
+
+async def _publish_task_with_recovery(
+    repo: CoreRepository,
+    db: AsyncSession,
+    task,
+    envelope: TaskEnvelope,
+    chat_id: str,
+    *,
+    notify_text: str,
+) -> bool:
+    try:
+        await bus.publish_task(envelope)
+    except Exception as exc:
+        logger.exception('Failed to publish task task_id=%s', task.id)
+        await repo.update_task_status(task.id, TaskStatus.FAILED, error=f'Failed to enqueue task ({exc}).')
+        await append_audit(
+            db,
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            actor='coordinator',
+            action='task_enqueue_failed',
+            details={
+                'task_id': task.id,
+                'task_type': task.task_type,
+                'error': str(exc),
+            },
+        )
+        await db.commit()
+        await _send_telegram_message(chat_id, notify_text)
+        return False
+
+    _maybe_launch_executor_job(task.id)
+    return True
 
 
 @app.post('/telegram/webhook')

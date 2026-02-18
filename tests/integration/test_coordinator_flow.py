@@ -1,10 +1,15 @@
 import asyncio
+import time
+from datetime import datetime
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
 from libs.common.db import AsyncSessionLocal
+from libs.common.enums import TaskStatus
 from libs.common.llm import LLMToolChatResult, ToolExecutionRecord
 from libs.common.repositories import CoreRepository
+from libs.common.schemas import TaskResult
 from libs.common.web_search import WebSearchUnavailableError
 
 
@@ -34,6 +39,25 @@ async def _latest_task_for_user(telegram_user_id: int):
             return None
         tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id, limit=1)
         return tasks[0] if tasks else None
+
+
+async def _create_task_for_user(telegram_user_id: int, *, status: TaskStatus, payload: dict):
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        identity = await repo.get_identity(str(telegram_user_id))
+        assert identity is not None
+        convo = await repo.get_or_create_conversation(identity.tenant_id, identity.user_id)
+        task = await repo.create_task(
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            conversation_id=convo.id,
+            task_type='shell',
+            risk_tier='L2',
+            payload=payload,
+            status=status,
+        )
+        await db.commit()
+        return task, identity
 
 
 def test_start_and_direct_response(monkeypatch):
@@ -175,6 +199,40 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
     assert any('approved and queued' in m['text'].lower() for m in sent_messages)
 
 
+def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch):
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_publish_task(envelope):
+        raise RuntimeError('task bus unavailable')
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(bus, 'publish_task', fake_publish_task)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 421}, 'chat': {'id': 421}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: ls -la', 'from': {'id': 421}, 'chat': {'id': 421}}},
+        )
+        assert resp.status_code == 200
+
+    task = asyncio.run(_latest_task_for_user(421))
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert 'failed to enqueue task' in (task.error or '').lower()
+    assert any('could not be queued' in m['text'].lower() for m in sent_messages)
+
+
 def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     from services.coordinator.main import app, telegram
 
@@ -229,8 +287,54 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     assert any('already processed' in text.lower() for text in callback_answers)
 
 
+def test_result_consumer_notifies_when_executor_already_set_terminal_status(monkeypatch):
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 431}, 'chat': {'id': 431}}},
+        )
+
+        task, identity = asyncio.run(
+            _create_task_for_user(431, status=TaskStatus.FAILED, payload={'command': 'shell: bad command'})
+        )
+        asyncio.run(
+            bus.publish_result(
+                TaskResult(
+                    task_id=UUID(task.id),
+                    tenant_id=UUID(identity.tenant_id),
+                    user_id=UUID(identity.user_id),
+                    success=False,
+                    output='Task failed',
+                    error='executor failed',
+                    created_at=datetime.utcnow(),
+                )
+            )
+        )
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not any(f"Task `{task.id}` failed" in m['text'] for m in sent_messages):
+            time.sleep(0.05)
+
+    assert any(f"Task `{task.id}` failed" in m['text'] for m in sent_messages)
+    latest = asyncio.run(_latest_task_for_user(431))
+    assert latest is not None
+    assert latest.status == TaskStatus.FAILED
+    assert latest.result == 'Task failed'
+    assert latest.error == 'executor failed'
+
+
 def test_unknown_approval_callback_action_is_rejected(monkeypatch):
-    from libs.common.enums import TaskStatus
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -275,7 +379,6 @@ def test_unknown_approval_callback_action_is_rejected(monkeypatch):
 
 
 def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monkeypatch):
-    from libs.common.enums import TaskStatus
     from services.coordinator.main import app, bus, telegram
 
     sent_messages = []
@@ -318,7 +421,6 @@ def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monk
 
 
 def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
-    from libs.common.enums import TaskStatus
     from services.coordinator.main import app, settings, telegram
 
     sent_messages = []
