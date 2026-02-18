@@ -28,3 +28,9 @@ def test_parse_shell_remote_no_space_colon_command_not_truncated():
     assert task_type == TaskType.SHELL
     assert payload['remote_host'] == 'example-host'
     assert payload['command'] == 'echo:key:value'
+
+
+def test_parse_web_command():
+    task_type, payload = _parse_task('web: latest ai news')
+    assert task_type == TaskType.WEB
+    assert payload['query'] == 'latest ai news'

@@ -12,6 +12,21 @@ SHELL_DENIED_NO_GRANT_COUNTER = Counter(
     'shell_execution_denied_no_grant_total',
     'Shell command executions denied because no approval grant exists',
 )
+WEB_SEARCH_REQUEST_COUNTER = Counter(
+    'web_search_requests_total',
+    'Web search requests',
+    ['status', 'depth'],
+)
+WEB_SEARCH_LATENCY = Histogram(
+    'web_search_latency_seconds',
+    'Web search latency',
+    ['depth'],
+)
+WEB_SEARCH_RESULTS_COUNT = Histogram(
+    'web_search_results_count',
+    'Web search results count',
+    ['depth'],
+)
 
 
 def metrics_response() -> Response:

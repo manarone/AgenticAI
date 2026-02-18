@@ -29,3 +29,4 @@ class TaskType(str, Enum):
     SKILL = 'skill'
     SHELL = 'shell'
     FILE = 'file'
+    WEB = 'web'

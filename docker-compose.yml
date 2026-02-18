@@ -45,6 +45,16 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   coordinator:
     build:
       context: .
@@ -58,6 +68,8 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      searxng:
+        condition: service_healthy
     command: ["sh", "-c", "python scripts/init_db.py && uvicorn services.coordinator.main:app --host 0.0.0.0 --port 8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2).read()"]
@@ -109,6 +121,14 @@ services:
       SHELL_REMOTE_ENABLED: ${SHELL_REMOTE_ENABLED:-false}
       SHELL_TIMEOUT_SECONDS: ${SHELL_TIMEOUT_SECONDS:-120}
       SHELL_ENV_ALLOWLIST: ${SHELL_ENV_ALLOWLIST:-PATH,HOME,LANG,LC_ALL,TERM,TZ}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
+      WEB_SEARCH_PROVIDER: ${WEB_SEARCH_PROVIDER:-searxng}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      WEB_SEARCH_TIMEOUT_SECONDS: ${WEB_SEARCH_TIMEOUT_SECONDS:-10}
+      WEB_SEARCH_DEFAULT_RESULTS: ${WEB_SEARCH_DEFAULT_RESULTS:-5}
+      WEB_SEARCH_DEEP_RESULTS: ${WEB_SEARCH_DEEP_RESULTS:-10}
+      WEB_SEARCH_MAX_RESULTS: ${WEB_SEARCH_MAX_RESULTS:-10}
+      WEB_SEARCH_MAX_CONCURRENT: ${WEB_SEARCH_MAX_CONCURRENT:-20}
     ports:
       - "8000:8000"
     volumes:

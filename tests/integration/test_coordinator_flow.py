@@ -3,7 +3,9 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from libs.common.db import AsyncSessionLocal
+from libs.common.llm import LLMToolChatResult, ToolExecutionRecord
 from libs.common.repositories import CoreRepository
+from libs.common.web_search import WebSearchUnavailableError
 
 
 async def _prepare_invite_code() -> str:
@@ -274,3 +276,187 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     assert any('blocked by safety policy' in m['text'].lower() for m in sent_messages)
     assert any('blocked by safety policy' in text.lower() for text in callback_answers)
     assert not any('approved and queued' in m['text'].lower() for m in sent_messages)
+
+
+def test_non_command_tool_response_appends_citations(monkeypatch):
+    from services.coordinator.main import app, llm, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        return LLMToolChatResult(
+            text='Here is what I found.',
+            prompt_tokens=12,
+            completion_tokens=8,
+            tool_records=[
+                ToolExecutionRecord(
+                    name='web_search',
+                    args={'query': 'latest ai news'},
+                    result={
+                        'ok': True,
+                        'query': 'latest ai news',
+                        'depth': 'balanced',
+                        'results': [
+                            {'title': 'Source A', 'url': 'https://a.example', 'snippet': 'a'},
+                            {'title': 'Source B', 'url': 'https://b.example', 'snippet': 'b'},
+                        ],
+                    },
+                )
+            ],
+        )
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 701}, 'chat': {'id': 701}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'what happened in ai today?', 'from': {'id': 701}, 'chat': {'id': 701}}},
+        )
+        assert resp.status_code == 200
+
+    final_msg = sent_messages[-1]['text']
+    assert 'sources:' in final_msg.lower()
+    assert 'https://a.example' in final_msg
+    assert 'https://b.example' in final_msg
+
+
+def test_web_command_returns_sources(monkeypatch):
+    from services.coordinator.main import app, telegram, web_search_client
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_search(query, *, depth='balanced', max_results=None):
+        return {
+            'query': query,
+            'depth': depth,
+            'results': [
+                {'title': 'Source A', 'url': 'https://a.example', 'snippet': 'a'},
+                {'title': 'Source B', 'url': 'https://b.example', 'snippet': 'b'},
+            ],
+        }
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(web_search_client, 'search', fake_search)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 801}, 'chat': {'id': 801}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'web: latest ai news', 'from': {'id': 801}, 'chat': {'id': 801}}},
+        )
+        assert resp.status_code == 200
+
+    final_msg = sent_messages[-1]['text']
+    assert 'top web results for:' in final_msg.lower()
+    assert 'sources:' in final_msg.lower()
+    assert 'https://a.example' in final_msg
+
+
+def test_web_command_fail_open_notice(monkeypatch):
+    from services.coordinator.main import app, llm, telegram, web_search_client
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_search(query, *, depth='balanced', max_results=None):
+        raise WebSearchUnavailableError('Live web search is currently unavailable.')
+
+    async def fake_chat(system_prompt, user_prompt, memory=None):
+        return 'Fallback answer without live data.', 2, 2
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(web_search_client, 'search', fake_search)
+    monkeypatch.setattr(llm, 'chat', fake_chat)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 901}, 'chat': {'id': 901}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'web: latest ai news', 'from': {'id': 901}, 'chat': {'id': 901}}},
+        )
+        assert resp.status_code == 200
+
+    final_msg = sent_messages[-1]['text']
+    assert 'live web search is currently unavailable' in final_msg.lower()
+    assert 'fallback answer without live data' in final_msg.lower()
+
+
+def test_web_command_disabled(monkeypatch):
+    from services.coordinator.main import app, settings, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(settings, 'web_search_enabled', False)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1001}, 'chat': {'id': 1001}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'web: latest ai news', 'from': {'id': 1001}, 'chat': {'id': 1001}}},
+        )
+        assert resp.status_code == 200
+
+    assert any('web search is disabled' in m['text'].lower() for m in sent_messages)
+
+
+def test_web_tool_not_exposed_when_disabled(monkeypatch):
+    from services.coordinator.main import app, llm, settings, telegram
+
+    sent_messages = []
+    seen_tools = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        seen_tools.append(kwargs.get('tools', []))
+        return LLMToolChatResult(text='No tools used.', prompt_tokens=1, completion_tokens=1, tool_records=[])
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+    monkeypatch.setattr(settings, 'web_search_enabled', False)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1101}, 'chat': {'id': 1101}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'what happened today?', 'from': {'id': 1101}, 'chat': {'id': 1101}}},
+        )
+        assert resp.status_code == 200
+
+    assert seen_tools and seen_tools[0] == []
+    assert any('no tools used' in m['text'].lower() for m in sent_messages)
