@@ -308,12 +308,13 @@ def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monk
             '/telegram/webhook',
             json={'callback_query': {'id': 'cb-deny', 'data': deny_callback_data, 'from': {'id': 561}}},
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 200
 
     task = asyncio.run(_latest_task_for_user(561))
     assert task is not None
     assert task.status == TaskStatus.CANCELED
     assert 'denied by user' in (task.error or '').lower()
+    assert any('cancel signal delivery failed' in m['text'].lower() for m in sent_messages)
 
 
 def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):

@@ -144,6 +144,11 @@ def test_malformed_shell_requires_approval():
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
 
 
+def test_malformed_redirection_is_treated_as_mutating():
+    result = classify_shell_command('echo "unterminated > /tmp/output')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+
+
 def test_bare_env_is_readonly():
     result = classify_shell_command('env')
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN

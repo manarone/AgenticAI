@@ -289,7 +289,7 @@ def _has_output_redirection(command: str) -> bool:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        return False
+        return True
 
     return any(token in {'>', '>>'} for token in tokens)
 

@@ -36,6 +36,8 @@ class SearxNGClient:
         self._max_concurrent = max(1, int(max_concurrent))
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_loop: asyncio.AbstractEventLoop | None = None
+        self._client_lock: asyncio.Lock | None = None
+        self._client_lock_loop: asyncio.AbstractEventLoop | None = None
         self._client: httpx.AsyncClient | None = None
 
     @staticmethod
@@ -75,10 +77,20 @@ class SearxNGClient:
                 break
         return normalized_results
 
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
-        return self._client
+    def _get_client_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._client_lock is None or self._client_lock_loop is not loop:
+            self._client_lock = asyncio.Lock()
+            self._client_lock_loop = loop
+        return self._client_lock
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is not None and not self._client.is_closed:
+            return self._client
+        async with self._get_client_lock():
+            if self._client is None or self._client.is_closed:
+                self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
+            return self._client
 
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
@@ -104,7 +116,7 @@ class SearxNGClient:
 
         try:
             async with self._get_semaphore():
-                client = self._get_client()
+                client = await self._get_client()
                 aggregated: list[dict] = []
                 for page in range(1, pages + 1):
                     response = await client.get(

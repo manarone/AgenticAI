@@ -825,6 +825,8 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 )
 
                 if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
+                    # Shell policy is the source of truth for shell commands; risk-tier heuristics do not override
+                    # an explicit ALLOW_AUTORUN decision.
                     SHELL_POLICY_ALLOW_COUNTER.inc()
                 elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
                     SHELL_POLICY_APPROVAL_COUNTER.inc()
@@ -988,12 +990,22 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             return {'ok': True}
 
         callback_text = decision.value
+        cancel_signal_error: str | None = None
+        grant_issue_error: str | None = None
 
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
             await db.commit()
-            await bus.publish_cancel(task.id)
-            await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
+            try:
+                await bus.publish_cancel(task.id)
+            except Exception as exc:
+                cancel_signal_error = str(exc)
+                callback_text = 'Denied (cancel signal unavailable)'
+                logger.exception('Failed to publish cancel signal for task_id=%s', task.id)
+            denied_message = f'Task {task.id[:8]} denied and canceled.'
+            if cancel_signal_error:
+                denied_message += ' Cancel signal delivery failed.'
+            await _send_telegram_message(chat_id, denied_message)
         else:
             if task.task_type == TaskType.SHELL.value:
                 command = str(task.payload.get('command', '')).strip()
@@ -1028,38 +1040,46 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                         f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
                     )
                 else:
-                    if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
-                        grant, refreshed = await repo.issue_approval_grant(
-                            tenant_id=task.tenant_id,
-                            user_id=task.user_id,
-                            scope=SHELL_MUTATION_SCOPE,
-                            ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
-                        )
-                        await append_audit(
-                            db,
-                            tenant_id=task.tenant_id,
-                            user_id=task.user_id,
-                            actor='coordinator',
-                            action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
-                            details={
-                                'scope': SHELL_MUTATION_SCOPE,
-                                'grant_id': grant.id,
-                                'expires_at': grant.expires_at.isoformat(),
-                                'command_hash': command_hash,
-                            },
-                        )
-
                     await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
+                    if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                        try:
+                            grant, refreshed = await repo.issue_approval_grant(
+                                tenant_id=task.tenant_id,
+                                user_id=task.user_id,
+                                scope=SHELL_MUTATION_SCOPE,
+                                ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
+                            )
+                            await append_audit(
+                                db,
+                                tenant_id=task.tenant_id,
+                                user_id=task.user_id,
+                                actor='coordinator',
+                                action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
+                                details={
+                                    'scope': SHELL_MUTATION_SCOPE,
+                                    'grant_id': grant.id,
+                                    'expires_at': grant.expires_at.isoformat(),
+                                    'command_hash': command_hash,
+                                },
+                            )
+                        except Exception as exc:
+                            grant_issue_error = str(exc)
+                            logger.exception('Failed to issue shell approval grant for task_id=%s', task.id)
             else:
                 await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
 
+        decision_details = {'approval_id': approval.id, 'decision': decision.value, 'task_id': task.id}
+        if cancel_signal_error:
+            decision_details['cancel_signal_error'] = cancel_signal_error
+        if grant_issue_error:
+            decision_details['grant_issue_error'] = grant_issue_error
         await append_audit(
             db,
             tenant_id=task.tenant_id,
             user_id=task.user_id,
             actor='user',
             action='approval_decision',
-            details={'approval_id': approval.id, 'decision': decision.value, 'task_id': task.id},
+            details=decision_details,
         )
         await db.commit()
         await telegram.answer_callback_query(callback_query_id, callback_text)
