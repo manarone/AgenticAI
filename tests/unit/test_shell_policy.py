@@ -158,3 +158,9 @@ def test_permissive_unknown_command_requires_approval():
 def test_permissive_readonly_stays_autorun():
     result = classify_shell_command('ls -la', mode='permissive')
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_strict_mode_mutating_signal_overrides_readonly_signal():
+    result = classify_shell_command('ls $(touch /tmp/pwn)', mode='strict')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'shell_command_substitution'

@@ -427,7 +427,7 @@ def classify_shell_command(
         )
 
     if normalized_mode == 'strict':
-        if readonly_reason:
+        if readonly_reason and not mutating_reason:
             return ShellPolicyResult(decision=ShellPolicyDecision.ALLOW_AUTORUN, reason=readonly_reason)
         return ShellPolicyResult(
             decision=ShellPolicyDecision.REQUIRE_APPROVAL,

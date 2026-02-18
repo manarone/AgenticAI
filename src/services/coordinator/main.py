@@ -460,7 +460,7 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
         if parsed:
             remote_host, command = parsed
             return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
-        return TaskType.SHELL, {'command': shell_target}
+        return TaskType.SHELL, {'command': shell_target, 'remote_parse_error': True}
 
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
@@ -781,6 +781,14 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 return
 
             if task_type == TaskType.SHELL:
+                if bool(payload.get('remote_parse_error')):
+                    await db.commit()
+                    await _send_telegram_message(
+                        chat_id,
+                        'Invalid remote shell syntax. Use `shell@host:command` or `shell@host:port:command`.',
+                    )
+                    return
+
                 command = payload.get('command', '').strip()
                 command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
                 shell_policy = classify_shell_command(

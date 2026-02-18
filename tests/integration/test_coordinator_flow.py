@@ -460,3 +460,28 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
 
     assert seen_tools and seen_tools[0] == []
     assert any('no tools used' in m['text'].lower() for m in sent_messages)
+
+
+def test_invalid_remote_shell_syntax_is_rejected(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1201}, 'chat': {'id': 1201}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell@invalid', 'from': {'id': 1201}, 'chat': {'id': 1201}}},
+        )
+        assert resp.status_code == 200
+
+    assert any('invalid remote shell syntax' in m['text'].lower() for m in sent_messages)
