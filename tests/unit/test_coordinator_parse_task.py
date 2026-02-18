@@ -1,3 +1,5 @@
+import pytest
+
 from libs.common.enums import TaskType
 from services.coordinator.main import _parse_task
 
@@ -28,3 +30,8 @@ def test_parse_shell_remote_no_space_colon_command_not_truncated():
     assert task_type == TaskType.SHELL
     assert payload['remote_host'] == 'example-host'
     assert payload['command'] == 'echo:key:value'
+
+
+def test_parse_shell_remote_invalid_target_raises():
+    with pytest.raises(ValueError):
+        _parse_task('shell@example-host')

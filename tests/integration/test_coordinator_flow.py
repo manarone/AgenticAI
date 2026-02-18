@@ -138,6 +138,32 @@ def test_blocked_shell_command_is_rejected(monkeypatch):
     assert not any(m['reply_markup'] for m in sent_messages if 'blocked' in m['text'].lower())
 
 
+def test_invalid_remote_shell_target_is_rejected(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 351}, 'chat': {'id': 351}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell@example-host', 'from': {'id': 351}, 'chat': {'id': 351}}},
+        )
+        assert resp.status_code == 200
+
+    assert any('invalid remote shell target' in m['text'].lower() for m in sent_messages)
+
+
 def test_shell_session_grant_skips_reapproval(monkeypatch):
     from services.coordinator.main import app, telegram
 

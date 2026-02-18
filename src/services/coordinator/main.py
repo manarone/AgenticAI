@@ -253,7 +253,7 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
         if parsed:
             remote_host, command = parsed
             return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
-        return TaskType.SHELL, {'command': shell_target}
+        raise ValueError('Invalid remote shell target. Use `shell@host:command`.')
 
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
@@ -426,7 +426,12 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     action='memory_remember_failed',
                     details={'error': str(exc)},
                 )
-            task_type, payload = _parse_task(sanitized)
+            try:
+                task_type, payload = _parse_task(sanitized)
+            except ValueError as exc:
+                await db.commit()
+                await _send_telegram_message(chat_id, str(exc))
+                return
             risk = classify_risk(sanitized)
             shell_requires_approval = False
 
@@ -588,6 +593,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 approval_id=UUID(approval_id) if approval_id else None,
                 created_at=datetime.utcnow(),
             )
+            await db.commit()
             await bus.publish_task(envelope)
             _maybe_launch_executor_job(task.id)
 
@@ -605,6 +611,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
 
 async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> None:
     await repo.update_task_status(task.id, TaskStatus.QUEUED)
+    await db.commit()
     try:
         risk_tier = RiskTier(task.risk_tier)
     except ValueError:
@@ -629,6 +636,7 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         action='task_enqueued',
         details={'task_id': task.id, 'task_type': task.task_type, 'risk_tier': risk_tier.value},
     )
+    await db.commit()
     await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
 
 
