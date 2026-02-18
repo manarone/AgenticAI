@@ -57,6 +57,13 @@ From Telegram:
 - `/cancel all`
 - `shell: echo hello`
 - `skill: timesheet this week`
+- `search and find me the weather in mountain view california today`
+- `tell me new ai news that came out today`
+
+Time-sensitive behavior notes:
+- Requests with `today`, `latest`, `current`, `now`, `breaking`, or `recent` in weather/news contexts are routed through deterministic web handling.
+- Replies include `As of` timestamps and source date labels.
+- If source dates are missing or unclear, the reply includes an explicit freshness warning.
 
 ## 7) Telegram Ingress Mode
 `dev` overlay runs `telegram-poller` by default. It uses Telegram `getUpdates` and forwards updates to:

@@ -1,5 +1,10 @@
 from libs.common.llm import ToolExecutionRecord
-from services.coordinator.main import _collect_web_failure_notice, _ensure_sources_section, _shell_approval_message
+from services.coordinator.main import (
+    _collect_web_failure_notice,
+    _ensure_sources_section,
+    _format_web_command_reply,
+    _shell_approval_message,
+)
 
 
 def test_ensure_sources_section_does_not_duplicate_inline_sources_header():
@@ -43,3 +48,21 @@ def test_shell_approval_message_escapes_remote_host_for_markdown():
         {'command': 'ls -la', 'remote_host': 'db_node[01]'},
     )
     assert 'on db\\_node\\[01\\]' in text
+
+
+def test_format_web_command_reply_includes_warning_and_dated_sources_for_time_sensitive_queries():
+    payload = {
+        'query': 'weather in mountain view today',
+        'time_sensitive': True,
+        'results': [
+            {'title': 'Source A', 'url': 'https://a.example', 'snippet': 'rain likely', 'published_at': None},
+            {'title': 'Source B', 'url': 'https://b.example', 'snippet': 'cloudy', 'published_at': '2026-02-17'},
+        ],
+    }
+
+    rendered = _format_web_command_reply(payload)
+    assert 'as of' in rendered.lower()
+    assert 'warning:' in rendered.lower()
+    assert 'sources:' in rendered.lower()
+    assert '(date: unknown)' in rendered
+    assert '(date: 2026-02-17)' in rendered

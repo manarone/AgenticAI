@@ -23,6 +23,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 # set OPENAI_API_KEY and TELEGRAM_BOT_TOKEN in .env
+# optional: set APP_TIMEZONE (default UTC) and PROMPT_DIR if prompts are outside src/prompts
 # default mem0 embedder is local fastembed + nomic-ai/nomic-embed-text-v1.5
 python3 scripts/init_db.py
 uvicorn services.coordinator.main:app --reload --port 8000
@@ -44,6 +45,15 @@ The first request downloads the embedding model weights and can take ~30-120s de
 ```bash
 pytest -q
 ```
+
+## Time-Sensitive Web Answers
+- Hybrid routing is enabled:
+- Time-sensitive natural language requests (for example weather/news with `today`, `latest`, `current`) are forced to deterministic `WEB` handling.
+- Non-time-sensitive open-ended chat still uses LLM tool mode.
+- Deterministic web replies now include:
+- `As of` timestamp (UTC + configured local timezone)
+- freshness warning when publication dates are missing/unclear
+- dated source links (`date: YYYY-MM-DD` or `date: unknown`)
 
 ## Kubernetes (K3s-Only)
 Create and apply secrets:
