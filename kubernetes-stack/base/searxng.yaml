@@ -33,17 +33,19 @@ spec:
               memory: 1Gi
       volumes:
         - name: searxng-settings
-          configMap:
+          secret:
             name: searxng-settings
 ---
 apiVersion: v1
-kind: ConfigMap
+kind: Secret
 metadata:
   name: searxng-settings
-data:
+type: Opaque
+stringData:
   settings.yml: |
     use_default_settings: true
     server:
+      secret_key: "replace-with-strong-searxng-secret"
       limiter: false
     search:
       safe_search: 1
