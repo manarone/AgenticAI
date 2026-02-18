@@ -113,3 +113,15 @@ async def test_client_reused_across_calls(monkeypatch):
     await client.search('second')
     assert len(fake_client.calls) == 2
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_semaphore_initialized_lazily(monkeypatch):
+    fake_client = _FakeClient(response=_FakeResponse({'results': []}))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *args, **kwargs: fake_client)
+
+    client = SearxNGClient(base_url='http://searxng:8080', timeout_seconds=3, max_results=3, max_concurrent=2)
+    assert client._semaphore is None
+    await client.search('first')
+    assert client._semaphore is not None
+    await client.aclose()

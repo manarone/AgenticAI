@@ -33,7 +33,9 @@ class SearxNGClient:
         self.base_url = base_url.rstrip('/')
         self.timeout_seconds = max(1, int(timeout_seconds))
         self.max_results = max(1, int(max_results))
-        self._semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
+        self._max_concurrent = max(1, int(max_concurrent))
+        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
         self._client: httpx.AsyncClient | None = None
 
     @staticmethod
@@ -74,9 +76,16 @@ class SearxNGClient:
         return normalized_results
 
     def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or bool(getattr(self._client, 'is_closed', False)):
+        if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
         return self._client
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._semaphore is None or self._semaphore_loop is not loop:
+            self._semaphore = asyncio.Semaphore(self._max_concurrent)
+            self._semaphore_loop = loop
+        return self._semaphore
 
     async def aclose(self) -> None:
         if self._client is None:
@@ -94,7 +103,7 @@ class SearxNGClient:
         pages = 2 if normalized_depth == 'deep' else 1
 
         try:
-            async with self._semaphore:
+            async with self._get_semaphore():
                 client = self._get_client()
                 aggregated: list[dict] = []
                 for page in range(1, pages + 1):
