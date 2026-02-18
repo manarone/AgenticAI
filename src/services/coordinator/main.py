@@ -586,6 +586,27 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
+async def _queue_task_after_approval(repo: CoreRepository, task, approval_id: str, chat_id: str) -> None:
+    await repo.update_task_status(task.id, TaskStatus.QUEUED)
+    try:
+        risk_tier = RiskTier(task.risk_tier)
+    except ValueError:
+        risk_tier = classify_risk(str(task.payload))
+    envelope = TaskEnvelope(
+        task_id=UUID(task.id),
+        tenant_id=UUID(task.tenant_id),
+        user_id=UUID(task.user_id),
+        task_type=TaskType(task.task_type),
+        payload=task.payload,
+        risk_tier=risk_tier,
+        approval_id=UUID(approval_id),
+        created_at=datetime.utcnow(),
+    )
+    await bus.publish_task(envelope)
+    _maybe_launch_executor_job(task.id)
+    await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+
+
 @app.post('/telegram/webhook')
 async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
     REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
@@ -633,7 +654,6 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                     allow_hard_block_override=settings.shell_allow_hard_block_override,
                 )
                 if shell_policy.decision == ShellPolicyDecision.BLOCKED:
-                    should_enqueue_task = False
                     callback_text = 'Blocked by safety policy'
                     await repo.update_task_status(
                         task.id,
@@ -679,43 +699,9 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                             },
                         )
 
-                    await repo.update_task_status(task.id, TaskStatus.QUEUED)
-                    try:
-                        risk_tier = RiskTier(task.risk_tier)
-                    except ValueError:
-                        risk_tier = classify_risk(str(task.payload))
-                    envelope = TaskEnvelope(
-                        task_id=UUID(task.id),
-                        tenant_id=UUID(task.tenant_id),
-                        user_id=UUID(task.user_id),
-                        task_type=TaskType(task.task_type),
-                        payload=task.payload,
-                        risk_tier=risk_tier,
-                        approval_id=UUID(approval.id),
-                        created_at=datetime.utcnow(),
-                    )
-                    await bus.publish_task(envelope)
-                    _maybe_launch_executor_job(task.id)
-                    await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+                    await _queue_task_after_approval(repo, task, approval.id, chat_id)
             else:
-                await repo.update_task_status(task.id, TaskStatus.QUEUED)
-                try:
-                    risk_tier = RiskTier(task.risk_tier)
-                except ValueError:
-                    risk_tier = classify_risk(str(task.payload))
-                envelope = TaskEnvelope(
-                    task_id=UUID(task.id),
-                    tenant_id=UUID(task.tenant_id),
-                    user_id=UUID(task.user_id),
-                    task_type=TaskType(task.task_type),
-                    payload=task.payload,
-                    risk_tier=risk_tier,
-                    approval_id=UUID(approval.id),
-                    created_at=datetime.utcnow(),
-                )
-                await bus.publish_task(envelope)
-                _maybe_launch_executor_job(task.id)
-                await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+                await _queue_task_after_approval(repo, task, approval.id, chat_id)
 
         await append_audit(
             db,

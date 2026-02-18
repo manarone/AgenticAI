@@ -123,10 +123,20 @@ def test_command_substitution_requires_approval():
     assert result.reason == 'shell_command_substitution'
 
 
+def test_single_quoted_dollar_parens_is_not_substitution():
+    result = classify_shell_command("grep '$(touch /tmp/pwn)' /tmp/file.txt")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
 def test_backtick_substitution_requires_approval():
     result = classify_shell_command('cat `touch /tmp/pwn`')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
     assert result.reason == 'shell_command_substitution'
+
+
+def test_single_quoted_backtick_is_not_substitution():
+    result = classify_shell_command("grep '`touch /tmp/pwn`' /tmp/file.txt")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
 
 
 def test_malformed_shell_requires_approval():

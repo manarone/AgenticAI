@@ -61,8 +61,6 @@ _DB_MIGRATION_TOOLS = {'flyway', 'liquibase', 'alembic', 'migrate', 'prisma'}
 _GIT_MUTATING_SUBCOMMANDS = {'commit', 'push', 'merge', 'rebase', 'reset', 'cherry-pick', 'stash', 'tag', 'checkout', 'switch', 'clean'}
 _NETWORK_MUTATING_TOOLS = {'iptables', 'ufw', 'ifconfig', 'route', 'nmcli'}
 
-_COMMAND_SUBSTITUTION_PATTERN = re.compile(r'(?<!\\)\$\(|(?<!\\)`')
-
 _FIND_MUTATING_TOKENS = {
     '-delete',
     '-exec',
@@ -210,7 +208,7 @@ def _mutating_reason(command: str) -> str | None:
     if _tokens(command) is None:
         return 'shell_parse_error'
 
-    if _COMMAND_SUBSTITUTION_PATTERN.search(command):
+    if _contains_shell_substitution(command):
         return 'shell_command_substitution'
 
     if _has_output_redirection(command):
@@ -248,6 +246,40 @@ def _mutating_reason(command: str) -> str | None:
             return f'mutating_tool_{first}'
 
     return None
+
+
+def _contains_shell_substitution(command: str) -> bool:
+    in_single = False
+    in_double = False
+    escaped = False
+
+    for index, ch in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+
+        if ch == '\\':
+            if not in_single:
+                escaped = True
+            continue
+
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            continue
+
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            continue
+
+        if in_single:
+            continue
+
+        if ch == '`':
+            return True
+        if ch == '$' and index + 1 < len(command) and command[index + 1] == '(':
+            return True
+
+    return False
 
 
 def _has_output_redirection(command: str) -> bool:
