@@ -45,35 +45,8 @@ class SearxNGClient:
             return self.max_results
         return max(1, min(int(requested), self.max_results))
 
-    async def search(self, query: str, *, depth: str = 'balanced', max_results: int | None = None) -> dict:
-        normalized_query = self._normalize_query(query)
-        if not normalized_query:
-            raise ValueError('Search query cannot be empty.')
-
-        limit = self._clamp_results(max_results)
-        params = {
-            'q': normalized_query,
-            'format': 'json',
-            'safesearch': '1',
-        }
-
-        try:
-            async with self._semaphore:
-                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                    response = await client.get(
-                        f'{self.base_url}/search',
-                        params=params,
-                        headers={'Accept': 'application/json'},
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-        except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
-            raise WebSearchUnavailableError() from exc
-
-        raw_results = payload.get('results') if isinstance(payload, dict) else None
-        if not isinstance(raw_results, list):
-            raw_results = []
-
+    @staticmethod
+    def _normalize_results(raw_results: list, *, limit: int) -> list[dict]:
         seen_urls: set[str] = set()
         normalized_results: list[dict] = []
         for item in raw_results:
@@ -97,9 +70,47 @@ class SearxNGClient:
             )
             if len(normalized_results) >= limit:
                 break
+        return normalized_results
+
+    async def search(self, query: str, *, depth: str = 'balanced', max_results: int | None = None) -> dict:
+        normalized_query = self._normalize_query(query)
+        if not normalized_query:
+            raise ValueError('Search query cannot be empty.')
+
+        limit = self._clamp_results(max_results)
+        normalized_depth = 'deep' if depth == 'deep' else 'balanced'
+        pages = 2 if normalized_depth == 'deep' else 1
+
+        try:
+            async with self._semaphore:
+                async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                    aggregated: list[dict] = []
+                    for page in range(1, pages + 1):
+                        response = await client.get(
+                            f'{self.base_url}/search',
+                            params={
+                                'q': normalized_query,
+                                'format': 'json',
+                                'safesearch': '1',
+                                'pageno': page,
+                            },
+                            headers={'Accept': 'application/json'},
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                        raw_results = payload.get('results') if isinstance(payload, dict) else None
+                        if not isinstance(raw_results, list):
+                            continue
+                        aggregated.extend(raw_results)
+                        if len(aggregated) >= limit:
+                            break
+        except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
+            raise WebSearchUnavailableError() from exc
+
+        normalized_results = self._normalize_results(aggregated, limit=limit)
 
         return {
             'query': normalized_query,
-            'depth': depth,
+            'depth': normalized_depth,
             'results': normalized_results,
         }

@@ -14,12 +14,16 @@ spec:
     spec:
       containers:
         - name: searxng
-          image: searxng/searxng:latest
+          image: searxng/searxng@sha256:60055af6f2f1ca14b488d9c0f47a019d1dbaf15b4f6547a7194253bf2ab94744
           ports:
             - containerPort: 8080
           env:
             - name: SEARXNG_BASE_URL
               value: http://searxng:8080/
+          volumeMounts:
+            - name: searxng-settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
           resources:
             requests:
               cpu: 200m
@@ -27,6 +31,31 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+      volumes:
+        - name: searxng-settings
+          configMap:
+            name: searxng-settings
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-settings
+data:
+  settings.yml: |
+    use_default_settings: true
+    server:
+      secret_key: "change-this-in-prod"
+      limiter: false
+    search:
+      safe_search: 1
+      formats:
+        - html
+        - json
+    enabled_plugins:
+      - Basic Calculator
+      - Hash plugin
+      - Self Information
+      - Tracker URL remover
 ---
 apiVersion: v1
 kind: Service

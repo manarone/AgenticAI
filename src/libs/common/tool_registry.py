@@ -13,6 +13,10 @@ class ToolDefinition:
     schema: dict
     handler: ToolHandler
 
+    def __post_init__(self) -> None:
+        if not callable(self.handler):
+            raise TypeError(f'Invalid handler for tool {self.name}: not callable')
+
 
 class ToolRegistry:
     def __init__(self) -> None:

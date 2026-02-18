@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     web_search_default_results: int = Field(default=5, alias='WEB_SEARCH_DEFAULT_RESULTS')
     web_search_deep_results: int = Field(default=10, alias='WEB_SEARCH_DEEP_RESULTS')
     web_search_max_results: int = Field(default=10, alias='WEB_SEARCH_MAX_RESULTS')
-    web_search_max_concurrent: int = Field(default=20, alias='WEB_SEARCH_MAX_CONCURRENT')
+    web_search_max_concurrent: int = Field(default=8, alias='WEB_SEARCH_MAX_CONCURRENT')
 
 
 @lru_cache(maxsize=1)

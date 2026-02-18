@@ -205,7 +205,7 @@ def _sources_from_results(results: list[dict], *, limit: int = 5) -> list[tuple[
 def _ensure_sources_section(text: str, sources: list[tuple[str, str]]) -> str:
     if not sources:
         return text
-    if re.search(r'(?im)^sources:\s*$', text):
+    if re.search(r'(?im)^sources:', text):
         return text
     lines = ['Sources:']
     for title, url in sources:
@@ -240,7 +240,7 @@ def _collect_web_failure_notice(tool_records: list[ToolExecutionRecord]) -> str 
         if record.name != 'web_search':
             continue
         payload = record.result if isinstance(record.result, dict) else {}
-        if payload.get('ok', True):
+        if payload.get('ok', False):
             continue
         notice = str(payload.get('user_notice', '')).strip()
         if notice:
