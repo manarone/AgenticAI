@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: telegram-poller
-          image: ghcr.io/example/agentai:v0.1.0
+          image: ghcr.io/manarj789/agentai:v0.1.0
           imagePullPolicy: IfNotPresent
           command: ["python", "scripts/telegram_polling_bridge.py"]
           envFrom:
@@ -25,3 +25,10 @@ spec:
           env:
             - name: COORDINATOR_WEBHOOK_URL
               value: http://coordinator:8000/telegram/webhook
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

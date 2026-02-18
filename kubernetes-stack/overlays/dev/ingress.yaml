@@ -3,6 +3,7 @@ kind: Ingress
 metadata:
   name: agentai-local
 spec:
+  ingressClassName: traefik
   rules:
     - host: coordinator.agentai.local
       http:

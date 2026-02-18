@@ -34,7 +34,7 @@ if command -v podman >/dev/null 2>&1; then
 fi
 
 if command -v buildah >/dev/null 2>&1; then
-  buildah bud -f Containerfile -t "${IMAGE_REF}" .
+  buildah bud --isolation chroot -f Containerfile -t "${IMAGE_REF}" .
   if [[ "${PUSH}" == "true" ]]; then
     buildah push "${IMAGE_REF}"
   fi
