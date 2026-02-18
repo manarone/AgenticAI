@@ -229,6 +229,93 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     assert any('already processed' in text.lower() for text in callback_answers)
 
 
+def test_unknown_approval_callback_action_is_rejected(monkeypatch):
+    from libs.common.enums import TaskStatus
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+    callback_answers = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        callback_answers.append(str(text))
+        return None
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 551}, 'chat': {'id': 551}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: systemctl restart nginx', 'from': {'id': 551}, 'chat': {'id': 551}}},
+        )
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        approve_callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        _, _, approval_id = approve_callback_data.partition(':')
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-unknown', 'data': f'unknown:{approval_id}', 'from': {'id': 551}}},
+        )
+        assert resp.status_code == 200
+
+    task = asyncio.run(_latest_task_for_user(551))
+    assert task is not None
+    assert task.status == TaskStatus.WAITING_APPROVAL
+    assert any('unsupported approval action' in text.lower() for text in callback_answers)
+
+
+def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monkeypatch):
+    from libs.common.enums import TaskStatus
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_publish_cancel(task_id):
+        raise RuntimeError('cancel bus unavailable')
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(bus, 'publish_cancel', fake_publish_cancel)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 561}, 'chat': {'id': 561}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: systemctl restart nginx', 'from': {'id': 561}, 'chat': {'id': 561}}},
+        )
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        deny_callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][1]['callback_data']
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-deny', 'data': deny_callback_data, 'from': {'id': 561}}},
+        )
+        assert resp.status_code == 500
+
+    task = asyncio.run(_latest_task_for_user(561))
+    assert task is not None
+    assert task.status == TaskStatus.CANCELED
+    assert 'denied by user' in (task.error or '').lower()
+
+
 def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     from libs.common.enums import TaskStatus
     from services.coordinator.main import app, settings, telegram

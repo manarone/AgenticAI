@@ -113,10 +113,11 @@ def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 
 
     if len(command) > max_command_len:
         command = command[: max_command_len - 3].rstrip() + '...'
+    escaped_command = command.replace('\\', '\\\\').replace('`', '\\`')
 
     remote_host = str(payload.get('remote_host', '')).strip()
     target = f' on {remote_host}' if remote_host else ''
-    return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n{command}\nApprove?'
+    return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n`{escaped_command}`\nApprove?'
 
 
 async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
@@ -924,6 +925,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
 
 async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> None:
     await repo.update_task_status(task.id, TaskStatus.QUEUED)
+    await db.commit()
     try:
         risk_tier = RiskTier(task.risk_tier)
     except ValueError:
@@ -963,6 +965,9 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         chat_id = str(callback_query.get('from', {}).get('id', ''))
         actor_tg_id = str(callback_query.get('from', {}).get('id', ''))
         action, _, approval_id = data.partition(':')
+        if action not in {'approve', 'deny'} or not approval_id:
+            await telegram.answer_callback_query(callback_query_id, 'Unsupported approval action.')
+            return {'ok': True}
 
         identity = await repo.get_identity(actor_tg_id)
         approval = await repo.get_approval(approval_id) if approval_id else None
@@ -986,6 +991,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
 
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
+            await db.commit()
             await bus.publish_cancel(task.id)
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:

@@ -85,7 +85,8 @@ def _segments(command: str) -> list[str]:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        return [stripped]
+        fallback_segments = [segment.strip() for segment in re.split(r'(?:&&|\|\||;|\|)', stripped) if segment.strip()]
+        return fallback_segments or [stripped]
 
     segments: list[str] = []
     current: list[str] = []

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -317,6 +318,15 @@ class CoreRepository:
         scope: str,
         ttl_minutes: int,
     ) -> tuple[ApprovalGrant, bool]:
+        bind = self.db.bind
+        if bind is not None and bind.dialect.name.startswith('postgresql'):
+            lock_key = int.from_bytes(
+                hashlib.sha256(f'{tenant_id}:{user_id}:{scope}'.encode('utf-8')).digest()[:8],
+                byteorder='big',
+                signed=True,
+            )
+            await self.db.execute(text('SELECT pg_advisory_xact_lock(:lock_key)'), {'lock_key': lock_key})
+
         now = datetime.utcnow()
         expires_at = now + timedelta(minutes=max(1, ttl_minutes))
 
