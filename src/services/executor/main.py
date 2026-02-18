@@ -149,8 +149,22 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
 
     if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
         has_grant = await repo.has_active_approval_grant(task.tenant_id, task.user_id, scope=SHELL_MUTATION_SCOPE)
+        queued_grant_id = str(task.payload.get('grant_id', '')).strip()
+        has_queued_grant_proof = False
+        if queued_grant_id:
+            queued_grant = await repo.get_approval_grant(queued_grant_id)
+            if (
+                queued_grant is not None
+                and queued_grant.tenant_id == task.tenant_id
+                and queued_grant.user_id == task.user_id
+                and queued_grant.scope == SHELL_MUTATION_SCOPE
+                and queued_grant.revoked_at is None
+                and task.created_at <= queued_grant.expires_at
+            ):
+                has_queued_grant_proof = True
+
         has_direct_approval = envelope.approval_id is not None
-        if not has_grant and not has_direct_approval:
+        if not has_grant and not has_direct_approval and not has_queued_grant_proof:
             SHELL_DENIED_NO_GRANT_COUNTER.inc()
             await append_audit(
                 repo.db,

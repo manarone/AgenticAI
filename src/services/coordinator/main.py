@@ -506,18 +506,23 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     return
 
                 if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
-                    has_grant = await repo.has_active_approval_grant(
+                    active_grant = await repo.get_active_approval_grant(
                         identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE
                     )
-                    shell_requires_approval = not has_grant
-                    if has_grant:
+                    shell_requires_approval = active_grant is None
+                    if active_grant is not None:
+                        payload['grant_id'] = active_grant.id
                         await append_audit(
                             db,
                             tenant_id=identity.tenant_id,
                             user_id=identity.user_id,
                             actor='coordinator',
                             action='approval_grant_reused',
-                            details={'scope': SHELL_MUTATION_SCOPE, 'command_hash': command_hash},
+                            details={
+                                'scope': SHELL_MUTATION_SCOPE,
+                                'grant_id': active_grant.id,
+                                'command_hash': command_hash,
+                            },
                         )
 
             if task_type == TaskType.SHELL:

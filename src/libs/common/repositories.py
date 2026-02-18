@@ -307,6 +307,10 @@ class CoreRepository:
         )
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
+    async def get_approval_grant(self, grant_id: str) -> ApprovalGrant | None:
+        stmt = select(ApprovalGrant).where(ApprovalGrant.id == grant_id).limit(1)
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
     async def has_active_approval_grant(self, tenant_id: str, user_id: str, scope: str) -> bool:
         return (await self.get_active_approval_grant(tenant_id, user_id, scope)) is not None
 

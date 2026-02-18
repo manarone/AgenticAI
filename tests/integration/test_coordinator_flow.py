@@ -24,6 +24,16 @@ async def _has_active_shell_grant(telegram_user_id: int) -> bool:
         return await repo.has_active_approval_grant(identity.tenant_id, identity.user_id, 'shell_mutation')
 
 
+async def _active_shell_grant_id(telegram_user_id: int) -> str | None:
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        identity = await repo.get_identity(str(telegram_user_id))
+        if identity is None:
+            return None
+        grant = await repo.get_active_approval_grant(identity.tenant_id, identity.user_id, 'shell_mutation')
+        return None if grant is None else grant.id
+
+
 async def _latest_task_for_user(telegram_user_id: int):
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)
@@ -162,6 +172,8 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
             '/telegram/webhook',
             json={'callback_query': {'id': 'cb-1', 'data': callback_data, 'from': {'id': 401}}},
         )
+        active_grant_id = asyncio.run(_active_shell_grant_id(401))
+        assert active_grant_id
 
         client.post(
             '/telegram/webhook',
@@ -171,6 +183,9 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
     approval_msgs = [m for m in sent_messages if m['reply_markup']]
     assert len(approval_msgs) == 1
     assert any('approved and queued' in m['text'].lower() for m in sent_messages)
+    latest_task = asyncio.run(_latest_task_for_user(401))
+    assert latest_task is not None
+    assert latest_task.payload.get('grant_id') == active_grant_id
 
 
 def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):

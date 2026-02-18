@@ -1,4 +1,5 @@
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from libs.common.db import AsyncSessionLocal
@@ -98,6 +99,59 @@ async def test_executor_rejects_remote_host_option_injection(monkeypatch):
     _, result = results[-1]
     assert result.success is False
     assert 'invalid remote host' in (result.error or '').lower()
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1
+
+
+async def test_executor_denies_mutating_shell_without_grant_or_direct_approval():
+    from services.executor.main import _process_task_once, bus
+
+    task, envelope = await _create_shell_task('touch /tmp/agentai-no-grant.txt')
+    await _process_task_once('1-0', envelope)
+
+    results = await bus.read_results(consumer_name='test-no-grant', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is False
+    assert 'requires approval' in (result.error or '').lower()
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1
+
+
+async def test_executor_allows_mutating_shell_with_queue_time_grant_proof_after_expiry():
+    from services.executor.main import _process_task_once, bus
+
+    task, envelope = await _create_shell_task('touch /tmp/agentai-queued-grant.txt')
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        grant, _ = await repo.issue_approval_grant(
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            scope='shell_mutation',
+            ttl_minutes=10,
+        )
+        stored = await repo.get_task(task.id)
+        assert stored is not None
+        stored.payload = {**(stored.payload or {}), 'grant_id': grant.id}
+        grant.expires_at = stored.created_at + timedelta(seconds=1)
+        await db.commit()
+
+    await asyncio.sleep(1.1)
+    await _process_task_once('1-0', envelope)
+
+    results = await bus.read_results(consumer_name='test-queued-proof', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is True
 
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)
