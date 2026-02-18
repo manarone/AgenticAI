@@ -707,6 +707,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                             'command_hash': command_hash,
                         },
                     )
+                    await db.commit()
                     await _send_telegram_message(
                         chat_id,
                         f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',

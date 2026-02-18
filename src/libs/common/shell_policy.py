@@ -285,8 +285,7 @@ def _mutating_reason(command: str) -> str | None:
             return 'shell_parse_error'
 
         first = _command_name(parts[0]) if parts else ''
-        if first == 'env' and _env_subcommand(parts):
-            return 'env_invokes_subcommand'
+        env_subcommand = _env_subcommand(parts) if first == 'env' else []
 
         normalized_parts = _unwrap_prefixed_command(parts)
         first, second = _first_two_tokens(normalized_parts)
@@ -312,6 +311,8 @@ def _mutating_reason(command: str) -> str | None:
             return f'mutating_tool_{first}_{second}'
         if first in _NETWORK_MUTATING_TOOLS:
             return f'mutating_tool_{first}'
+        if env_subcommand:
+            return 'env_invokes_subcommand'
 
     return None
 

@@ -103,7 +103,7 @@ def test_find_delete_requires_approval():
 def test_env_subcommand_requires_approval():
     result = classify_shell_command('env -i rm -rf /tmp/work')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
-    assert result.reason == 'env_invokes_subcommand'
+    assert result.reason == 'mutating_prefix_rm'
 
 
 def test_env_wrapped_rm_rf_root_is_hard_blocked():
