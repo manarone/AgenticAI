@@ -40,6 +40,11 @@ def test_disk_tool_keyword_in_readonly_argument_is_not_hard_blocked():
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
 
 
+def test_escaped_pipe_in_grep_pattern_stays_readonly():
+    result = classify_shell_command(r"grep 'foo\|bar' /tmp/file.txt")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
 def test_power_operation_command_is_hard_blocked():
     result = classify_shell_command('reboot')
     assert result.decision == ShellPolicyDecision.BLOCKED
@@ -101,3 +106,13 @@ def test_backtick_substitution_requires_approval():
     result = classify_shell_command('cat `touch /tmp/pwn`')
     assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
     assert result.reason == 'shell_command_substitution'
+
+
+def test_malformed_shell_requires_approval():
+    result = classify_shell_command('ls "unclosed')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+
+
+def test_bare_env_is_readonly():
+    result = classify_shell_command('env')
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN

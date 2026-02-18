@@ -80,17 +80,42 @@ _FIND_MUTATING_TOKENS = {
     '-fprint0',
     '-fls',
 }
+_CONTROL_OPERATORS = {'&&', '||', ';', '|'}
 
 
 def _segments(command: str) -> list[str]:
-    return [segment.strip() for segment in re.split(r'(?:&&|\|\||;|\|)', command) if segment.strip()]
+    stripped = command.strip()
+    if not stripped:
+        return []
+
+    try:
+        lexer = shlex.shlex(stripped, posix=True, punctuation_chars='|&;')
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return [stripped]
+
+    segments: list[str] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in _CONTROL_OPERATORS:
+            if current:
+                segments.append(' '.join(current))
+                current = []
+            continue
+        current.append(token)
+
+    if current:
+        segments.append(' '.join(current))
+
+    return segments
 
 
-def _tokens(segment: str) -> list[str]:
+def _tokens(segment: str) -> list[str] | None:
     try:
         return shlex.split(segment, posix=True)
     except ValueError:
-        return []
+        return None
 
 
 def _command_name(token: str) -> str:
@@ -102,8 +127,7 @@ def _command_name(token: str) -> str:
     return stripped.lower()
 
 
-def _first_two_tokens(segment: str) -> tuple[str, str]:
-    parts = _tokens(segment)
+def _first_two_tokens(parts: list[str] | None) -> tuple[str, str]:
     if not parts:
         return '', ''
     first = _command_name(parts[0])
@@ -111,7 +135,9 @@ def _first_two_tokens(segment: str) -> tuple[str, str]:
     return first, second
 
 
-def _find_has_mutating_action(parts: list[str]) -> bool:
+def _find_has_mutating_action(parts: list[str] | None) -> bool:
+    if not parts:
+        return False
     for token in parts[1:]:
         lowered = token.lower()
         if lowered in _FIND_MUTATING_TOKENS:
@@ -121,7 +147,7 @@ def _find_has_mutating_action(parts: list[str]) -> bool:
     return False
 
 
-def _env_subcommand(parts: list[str]) -> list[str]:
+def _env_subcommand(parts: list[str] | None) -> list[str]:
     if not parts or _command_name(parts[0]) != 'env':
         return []
 
@@ -158,7 +184,7 @@ def _readonly_reason(command: str) -> str | None:
 
     for segment in segments:
         parts = _tokens(segment)
-        if not parts:
+        if parts is None:
             return None
 
         first = _command_name(parts[0])
@@ -170,8 +196,11 @@ def _readonly_reason(command: str) -> str | None:
             continue
         if first == 'find' and not _find_has_mutating_action(parts):
             continue
-        if first == 'env' and not _env_subcommand(parts):
-            continue
+        if first == 'env':
+            env_subcommand = _env_subcommand(parts)
+            if not env_subcommand:
+                continue
+            return None
         if first == 'git' and second in {'status', 'log', 'show', 'diff'}:
             continue
         return None
@@ -191,12 +220,16 @@ def _mutating_reason(command: str) -> str | None:
         return 'output_redirection'
 
     for segment in _segments(normalized):
-        first, second = _first_two_tokens(segment)
+        parts = _tokens(segment)
+        if parts is None:
+            return 'shell_parse_error'
+
+        first, second = _first_two_tokens(parts)
         if first in _MUTATING_PREFIXES:
             return f'mutating_prefix_{first}'
-        if first == 'find' and _find_has_mutating_action(_tokens(segment)):
+        if first == 'find' and _find_has_mutating_action(parts):
             return 'find_mutating_action'
-        if first == 'env' and _env_subcommand(_tokens(segment)):
+        if first == 'env' and _env_subcommand(parts):
             return 'env_invokes_subcommand'
         if first == 'sed' and second == '-i':
             return 'in_place_edit'
@@ -226,7 +259,7 @@ def _blocked_reason(command: str) -> str | None:
 
     for segment in _segments(command):
         parts = _tokens(segment)
-        if not parts:
+        if parts is None:
             continue
 
         first = _command_name(parts[0])
@@ -262,7 +295,7 @@ def _blocked_reason(command: str) -> str | None:
 def _is_root_delete_command(command: str) -> bool:
     for segment in _segments(command):
         parts = _tokens(segment)
-        if not parts:
+        if parts is None:
             continue
         first = _command_name(parts[0])
         rm_parts = parts if first == 'rm' else (_env_subcommand(parts) if first == 'env' else [])
