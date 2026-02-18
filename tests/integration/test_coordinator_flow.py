@@ -111,6 +111,76 @@ def test_destructive_flow_waits_for_approval(monkeypatch):
     assert 'delete /tmp/a' in approval_msgs[0]['text'].lower()
 
 
+def test_shell_approval_message_redacts_secret_like_values(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 251}, 'chat': {'id': 251}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={
+                'message': {
+                    'text': 'shell: curl -H "Authorization: Bearer sk-secret123" https://api.example.com',
+                    'from': {'id': 251},
+                    'chat': {'id': 251},
+                }
+            },
+        )
+        assert resp.status_code == 200
+
+    approval_msgs = [m for m in sent_messages if m['reply_markup']]
+    assert approval_msgs
+    preview = approval_msgs[0]['text']
+    assert '[REDACTED]' in preview
+    assert 'sk-secret123' not in preview
+
+
+def test_queue_publish_failure_marks_task_failed(monkeypatch):
+    from libs.common.enums import TaskStatus
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def failing_publish_task(_envelope):
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(bus, 'publish_task', failing_publish_task)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 271}, 'chat': {'id': 271}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: ls -la', 'from': {'id': 271}, 'chat': {'id': 271}}},
+        )
+        assert resp.status_code == 200
+
+    assert any('failed to queue due to an internal error' in m['text'].lower() for m in sent_messages)
+    latest_task = asyncio.run(_latest_task_for_user(271))
+    assert latest_task is not None
+    assert latest_task.status == TaskStatus.FAILED
+
+
 def test_blocked_shell_command_is_rejected(monkeypatch):
     from services.coordinator.main import app, telegram
 

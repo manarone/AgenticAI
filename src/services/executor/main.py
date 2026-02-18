@@ -36,6 +36,7 @@ WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger(__name__)
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
+_DEFAULT_SHELL_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 
 class NonRetriableExecutionError(RuntimeError):
@@ -53,6 +54,8 @@ def _shell_env() -> dict[str, str]:
         value = os.environ.get(name)
         if value is not None:
             env[name] = value
+    if 'PATH' not in env:
+        env['PATH'] = _DEFAULT_SHELL_PATH
     return env
 
 

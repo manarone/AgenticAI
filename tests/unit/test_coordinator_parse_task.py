@@ -35,3 +35,8 @@ def test_parse_shell_remote_no_space_colon_command_not_truncated():
 def test_parse_shell_remote_invalid_target_raises():
     with pytest.raises(ValueError):
         _parse_task('shell@example-host')
+
+
+def test_parse_shell_remote_host_port_without_command_raises():
+    with pytest.raises(ValueError):
+        _parse_task('shell@example-host:22')

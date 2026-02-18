@@ -181,3 +181,15 @@ async def test_executor_rejects_empty_shell_command():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.status == TaskStatus.FAILED
+
+
+def test_shell_env_ensures_default_path(monkeypatch):
+    from services.executor import main as executor_main
+
+    monkeypatch.setattr(executor_main.settings, 'shell_env_allowlist', 'PATH,HOME')
+    monkeypatch.delenv('PATH', raising=False)
+    monkeypatch.setenv('HOME', '/tmp/agentai-home')
+
+    env = executor_main._shell_env()
+    assert env['PATH'] == '/usr/local/bin:/usr/bin:/bin'
+    assert env['HOME'] == '/tmp/agentai-home'

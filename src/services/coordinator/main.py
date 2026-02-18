@@ -47,6 +47,24 @@ job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
+_SHELL_PREVIEW_SECRET_PATTERNS = (
+    (
+        re.compile(r'(?i)(\b(?:token|secret|password|passwd|api[_-]?key|authorization)\s*=\s*)([^\s\'"]+)'),
+        r'\1[REDACTED]',
+    ),
+    (
+        re.compile(r'(?i)(\b--?(?:token|secret|password|passwd|api[_-]?key)\s+)([^\s\'"]+)'),
+        r'\1[REDACTED]',
+    ),
+    (
+        re.compile(r'(?i)(bearer\s+)([^\s\'"]+)'),
+        r'\1[REDACTED]',
+    ),
+    (
+        re.compile(r'(?i)(authorization\s*:\s*)([^\s\'"]+)'),
+        r'\1[REDACTED]',
+    ),
+)
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -79,8 +97,15 @@ def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> 
     return chunks
 
 
+def _redact_shell_preview(command: str) -> str:
+    redacted = command
+    for pattern, replacement in _SHELL_PREVIEW_SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
 def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 320) -> str:
-    command = str(payload.get('command', '')).strip().replace('\n', ' ')
+    command = _redact_shell_preview(str(payload.get('command', '')).strip().replace('\n', ' '))
     if not command:
         return f'Task {task_id[:8]} needs approval before running this command. Approve?'
 
@@ -103,6 +128,34 @@ async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | N
 
     for chunk in _chunk_telegram_text(text):
         await telegram.send_message(chat_id=chat_id, text=chunk)
+
+
+async def _publish_task_with_recovery(
+    repo: CoreRepository,
+    db: AsyncSession,
+    task,
+    envelope: TaskEnvelope,
+    chat_id: str,
+) -> bool:
+    try:
+        await bus.publish_task(envelope)
+    except Exception:
+        logger.exception('Failed to publish task %s to bus', task.id)
+        await repo.update_task_status(task.id, TaskStatus.FAILED, error='Failed to publish task to executor.')
+        await append_audit(
+            db,
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            actor='coordinator',
+            action='task_publish_failed',
+            details={'task_id': task.id, 'task_type': task.task_type},
+        )
+        await db.commit()
+        await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed to queue due to an internal error.')
+        return False
+
+    _maybe_launch_executor_job(task.id)
+    return True
 
 
 @asynccontextmanager
@@ -299,6 +352,12 @@ def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
         command = host_port.group('command').strip()
         if command:
             return host, command
+
+    # `host:22` is ambiguous between "port-only remote target" and command `22`; fail closed.
+    if first_space == -1:
+        host_only, sep, maybe_command = target.partition(':')
+        if sep and host_only and ':' not in host_only and maybe_command.isdigit():
+            return None
 
     # For unbracketed IPv6 hosts, prefer the right-most split whose host parses as IPv6.
     for index in range(len(target) - 1, -1, -1):
@@ -607,8 +666,9 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 created_at=datetime.utcnow(),
             )
             await db.commit()
-            await bus.publish_task(envelope)
-            _maybe_launch_executor_job(task.id)
+            published = await _publish_task_with_recovery(repo, db, task, envelope, chat_id)
+            if not published:
+                return
 
             await append_audit(
                 db,
@@ -639,8 +699,9 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         approval_id=UUID(approval_id),
         created_at=datetime.utcnow(),
     )
-    await bus.publish_task(envelope)
-    _maybe_launch_executor_job(task.id)
+    published = await _publish_task_with_recovery(repo, db, task, envelope, chat_id)
+    if not published:
+        return
     await append_audit(
         db,
         tenant_id=task.tenant_id,

@@ -268,9 +268,6 @@ def _mutating_reason(command: str) -> str | None:
     if not normalized:
         return 'empty_command'
 
-    if _tokens(command) is None:
-        return 'shell_parse_error'
-
     if _contains_shell_substitution(command):
         return 'shell_command_substitution'
 
