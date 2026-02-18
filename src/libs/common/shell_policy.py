@@ -65,10 +65,6 @@ _MUTATING_KEYWORDS = [
 
 _BLOCK_PATTERNS = [
     (r':\(\)\s*\{\s*:\|:\s*&\s*\};:', 'fork_bomb'),
-    (r'\b(mkfs(\.\w+)?|fdisk|parted|sfdisk)\b', 'disk_format_tool'),
-    (r'\bdd\s+if=/dev/(zero|random|urandom)\s+of=/dev/', 'dd_device_wipe'),
-    (r'\b(shutdown|reboot|poweroff|halt)\b', 'power_operation'),
-    (r'\binit\s+[06]\b', 'init_power_operation'),
 ]
 
 _COMMAND_SUBSTITUTION_PATTERN = re.compile(r'(?<!\\)\$\(|(?<!\\)`')
@@ -227,6 +223,34 @@ def _has_output_redirection(command: str) -> bool:
 def _blocked_reason(command: str) -> str | None:
     if _is_root_delete_command(command):
         return 'rm_rf_root'
+
+    for segment in _segments(command):
+        parts = _tokens(segment)
+        if not parts:
+            continue
+
+        first = _command_name(parts[0])
+        blocked_parts = parts if first != 'env' else _env_subcommand(parts)
+        if not blocked_parts:
+            continue
+
+        blocked_command = _command_name(blocked_parts[0])
+        if not blocked_command:
+            continue
+
+        if blocked_command.startswith('mkfs') or blocked_command in {'fdisk', 'parted', 'sfdisk'}:
+            return 'disk_format_tool'
+        if blocked_command in {'shutdown', 'reboot', 'poweroff', 'halt'}:
+            return 'power_operation'
+        if blocked_command == 'init':
+            second = blocked_parts[1].lower() if len(blocked_parts) > 1 else ''
+            if second in {'0', '6'}:
+                return 'init_power_operation'
+        if blocked_command == 'dd':
+            has_source = any(token.lower() in {'if=/dev/zero', 'if=/dev/random', 'if=/dev/urandom'} for token in blocked_parts[1:])
+            has_device_sink = any(token.lower().startswith('of=/dev/') for token in blocked_parts[1:])
+            if has_source and has_device_sink:
+                return 'dd_device_wipe'
 
     normalized = command.lower().strip()
     for pattern, reason in _BLOCK_PATTERNS:

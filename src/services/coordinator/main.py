@@ -617,11 +617,14 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             await telegram.answer_callback_query(callback_query_id, 'Task not found')
             return {'ok': True}
 
+        callback_text = decision.value
+
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
             await bus.publish_cancel(task.id)
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
+            should_enqueue_task = True
             if task.task_type == TaskType.SHELL.value:
                 command = str(task.payload.get('command', '')).strip()
                 command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
@@ -630,7 +633,32 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                     mode=settings.shell_policy_mode,
                     allow_hard_block_override=settings.shell_allow_hard_block_override,
                 )
-                if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                if shell_policy.decision == ShellPolicyDecision.BLOCKED:
+                    should_enqueue_task = False
+                    callback_text = 'Blocked by safety policy'
+                    await repo.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error=f'Blocked by shell policy during approval ({shell_policy.reason})',
+                    )
+                    await append_audit(
+                        db,
+                        tenant_id=task.tenant_id,
+                        user_id=task.user_id,
+                        actor='coordinator',
+                        action='execution_blocked_by_policy',
+                        details={
+                            'task_id': task.id,
+                            'task_type': 'shell',
+                            'reason': shell_policy.reason,
+                            'command_hash': command_hash,
+                        },
+                    )
+                    await _send_telegram_message(
+                        chat_id,
+                        f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
+                    )
+                elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
                     grant, refreshed = await repo.issue_approval_grant(
                         tenant_id=task.tenant_id,
                         user_id=task.user_id,
@@ -651,24 +679,25 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                         },
                     )
 
-            await repo.update_task_status(task.id, TaskStatus.QUEUED)
-            try:
-                risk_tier = RiskTier(task.risk_tier)
-            except ValueError:
-                risk_tier = classify_risk(str(task.payload))
-            envelope = TaskEnvelope(
-                task_id=UUID(task.id),
-                tenant_id=UUID(task.tenant_id),
-                user_id=UUID(task.user_id),
-                task_type=TaskType(task.task_type),
-                payload=task.payload,
-                risk_tier=risk_tier,
-                approval_id=UUID(approval.id),
-                created_at=datetime.utcnow(),
-            )
-            await bus.publish_task(envelope)
-            _maybe_launch_executor_job(task.id)
-            await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+            if should_enqueue_task:
+                await repo.update_task_status(task.id, TaskStatus.QUEUED)
+                try:
+                    risk_tier = RiskTier(task.risk_tier)
+                except ValueError:
+                    risk_tier = classify_risk(str(task.payload))
+                envelope = TaskEnvelope(
+                    task_id=UUID(task.id),
+                    tenant_id=UUID(task.tenant_id),
+                    user_id=UUID(task.user_id),
+                    task_type=TaskType(task.task_type),
+                    payload=task.payload,
+                    risk_tier=risk_tier,
+                    approval_id=UUID(approval.id),
+                    created_at=datetime.utcnow(),
+                )
+                await bus.publish_task(envelope)
+                _maybe_launch_executor_job(task.id)
+                await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
 
         await append_audit(
             db,
@@ -679,7 +708,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             details={'approval_id': approval.id, 'decision': decision.value, 'task_id': task.id},
         )
         await db.commit()
-        await telegram.answer_callback_query(callback_query_id, f'{decision.value}')
+        await telegram.answer_callback_query(callback_query_id, callback_text)
         return {'ok': True}
 
     message = payload.get('message', {})

@@ -30,6 +30,22 @@ def test_hard_block_can_be_overridden_to_approval():
     assert result.reason.startswith('hard_block_overridden_')
 
 
+def test_power_keyword_in_readonly_argument_is_not_hard_blocked():
+    result = classify_shell_command("grep 'reboot required' /var/log/syslog")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_disk_tool_keyword_in_readonly_argument_is_not_hard_blocked():
+    result = classify_shell_command("cat '/tmp/mkfs notes.txt'")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_power_operation_command_is_hard_blocked():
+    result = classify_shell_command('reboot')
+    assert result.decision == ShellPolicyDecision.BLOCKED
+    assert result.reason == 'power_operation'
+
+
 def test_quoted_redirection_symbol_does_not_trigger_mutation():
     result = classify_shell_command("grep 'a>b' /tmp/file.txt")
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN

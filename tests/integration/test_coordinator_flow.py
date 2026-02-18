@@ -24,6 +24,16 @@ async def _has_active_shell_grant(telegram_user_id: int) -> bool:
         return await repo.has_active_approval_grant(identity.tenant_id, identity.user_id, 'shell_mutation')
 
 
+async def _latest_task_for_user(telegram_user_id: int):
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        identity = await repo.get_identity(str(telegram_user_id))
+        if identity is None:
+            return None
+        tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id, limit=1)
+        return tasks[0] if tasks else None
+
+
 def test_start_and_direct_response(monkeypatch):
     from services.coordinator.main import app, telegram
 
@@ -215,3 +225,52 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     assert asyncio.run(_has_active_shell_grant(501)) is False
     assert sum(1 for m in sent_messages if 'approved and queued' in m['text'].lower()) == 1
     assert any('already processed' in text.lower() for text in callback_answers)
+
+
+def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
+    from libs.common.enums import TaskStatus
+    from services.coordinator.main import app, settings, telegram
+
+    sent_messages = []
+    callback_answers = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        callback_answers.append(str(text))
+        return None
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+    monkeypatch.setattr(settings, 'shell_allow_hard_block_override', True)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 601}, 'chat': {'id': 601}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: rm -rf /', 'from': {'id': 601}, 'chat': {'id': 601}}},
+        )
+
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+
+        monkeypatch.setattr(settings, 'shell_allow_hard_block_override', False)
+        client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-blocked', 'data': callback_data, 'from': {'id': 601}}},
+        )
+
+    task = asyncio.run(_latest_task_for_user(601))
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert 'blocked by shell policy during approval' in (task.error or '').lower()
+    assert any('blocked by safety policy' in m['text'].lower() for m in sent_messages)
+    assert any('blocked by safety policy' in text.lower() for text in callback_answers)
+    assert not any('approved and queued' in m['text'].lower() for m in sent_messages)

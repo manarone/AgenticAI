@@ -79,6 +79,8 @@ async def _run_local_shell(command: str) -> str:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=settings.shell_timeout_seconds)
     except TimeoutError as exc:
         proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.communicate()
         raise RuntimeError('Command timed out') from exc
 
     if proc.returncode != 0:
@@ -102,6 +104,8 @@ async def _run_remote_shell(remote_host: str, command: str) -> str:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=settings.shell_timeout_seconds)
     except TimeoutError as exc:
         proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.communicate()
         raise RuntimeError('Remote command timed out') from exc
 
     if proc.returncode != 0:
