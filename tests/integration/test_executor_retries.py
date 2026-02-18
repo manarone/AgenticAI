@@ -19,7 +19,7 @@ async def test_executor_retries_then_fails():
             conversation_id=convo.id,
             task_type='shell',
             risk_tier='L2',
-            payload={'command': 'systemctl restart nginx'},
+            payload={'command': 'cat /definitely/missing/file'},
             status=TaskStatus.QUEUED,
         )
         await db.commit()
@@ -29,7 +29,7 @@ async def test_executor_retries_then_fails():
         tenant_id=UUID(tenant.id),
         user_id=UUID(user.id),
         task_type=TaskType.SHELL,
-        payload={'command': 'systemctl restart nginx'},
+        payload={'command': 'cat /definitely/missing/file'},
         risk_tier=RiskTier.L2,
         created_at=datetime.utcnow(),
     )

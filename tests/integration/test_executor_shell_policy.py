@@ -51,9 +51,8 @@ async def test_executor_allows_readonly_shell():
 async def test_executor_blocks_hard_blocked_command():
     from services.executor.main import _process_task_once, bus
 
-    _, envelope = await _create_shell_task('rm -rf /')
+    task, envelope = await _create_shell_task('rm -rf /')
     await _process_task_once('1-0', envelope)
-    await _process_task_once('2-0', envelope)
 
     results = await bus.read_results(consumer_name='test-blocked', count=10, block_ms=10)
     assert results
@@ -61,13 +60,18 @@ async def test_executor_blocks_hard_blocked_command():
     assert result.success is False
     assert 'blocked' in (result.error or '').lower()
 
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1
+
 
 async def test_executor_remote_shell_disabled_by_default():
     from services.executor.main import _process_task_once, bus
 
-    _, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': 'example-host'})
+    task, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': 'example-host'})
     await _process_task_once('1-0', envelope)
-    await _process_task_once('2-0', envelope)
 
     results = await bus.read_results(consumer_name='test-remote-disabled', count=10, block_ms=10)
     assert results
@@ -75,17 +79,28 @@ async def test_executor_remote_shell_disabled_by_default():
     assert result.success is False
     assert 'remote shell execution is disabled' in (result.error or '').lower()
 
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1
+
 
 async def test_executor_rejects_remote_host_option_injection(monkeypatch):
     from services.executor import main as executor_main
 
     monkeypatch.setattr(executor_main.settings, 'shell_remote_enabled', True)
-    _, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': '-oProxyCommand=bad'})
+    task, envelope = await _create_shell_task('uname -a', payload_extra={'remote_host': '-oProxyCommand=bad'})
     await executor_main._process_task_once('1-0', envelope)
-    await executor_main._process_task_once('2-0', envelope)
 
     results = await executor_main.bus.read_results(consumer_name='test-remote-injection', count=10, block_ms=10)
     assert results
     _, result = results[-1]
     assert result.success is False
     assert 'invalid remote host' in (result.error or '').lower()
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1

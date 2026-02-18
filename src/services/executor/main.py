@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 
 
+class NonRetriableExecutionError(RuntimeError):
+    """Raised for policy/configuration denials that retries cannot recover from."""
+
+
 def _command_hash(command: str) -> str:
     return hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
 
@@ -58,9 +62,9 @@ def _shell_env() -> dict[str, str]:
 
 def _validate_remote_host(remote_host: str) -> None:
     if not remote_host:
-        raise RuntimeError('Missing remote host.')
+        raise NonRetriableExecutionError('Missing remote host.')
     if remote_host.startswith('-') or not _REMOTE_HOST_RE.fullmatch(remote_host):
-        raise RuntimeError('Invalid remote host.')
+        raise NonRetriableExecutionError('Invalid remote host.')
 
 
 async def _run_local_shell(command: str) -> str:
@@ -146,7 +150,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
             action='execution_blocked_by_policy',
             details={'task_id': task.id, 'reason': shell_policy.reason, 'command_hash': command_hash},
         )
-        raise RuntimeError(f'Command blocked by shell policy ({shell_policy.reason}).')
+        raise NonRetriableExecutionError(f'Command blocked by shell policy ({shell_policy.reason}).')
 
     if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
         has_grant = await repo.has_active_approval_grant(task.tenant_id, task.user_id, scope=SHELL_MUTATION_SCOPE)
@@ -165,7 +169,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
                     'command_hash': command_hash,
                 },
             )
-            raise RuntimeError('Command requires approval grant; no active grant found.')
+            raise NonRetriableExecutionError('Command requires approval grant; no active grant found.')
 
     if remote_host and not settings.shell_remote_enabled:
         await append_audit(
@@ -181,7 +185,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
                 'remote_host': remote_host,
             },
         )
-        raise RuntimeError('Remote shell execution is disabled by policy.')
+        raise NonRetriableExecutionError('Remote shell execution is disabled by policy.')
 
     await append_audit(
         repo.db,
@@ -298,6 +302,19 @@ async def _process_task_once(message_id: str, envelope) -> None:
                 )
             )
             TASK_COUNTER.labels(status='success').inc()
+        except NonRetriableExecutionError as exc:
+            await bus.publish_result(
+                TaskResult(
+                    task_id=envelope.task_id,
+                    tenant_id=envelope.tenant_id,
+                    user_id=envelope.user_id,
+                    success=False,
+                    output='Task failed',
+                    error=str(exc),
+                    created_at=datetime.utcnow(),
+                )
+            )
+            TASK_COUNTER.labels(status='failed').inc()
         except Exception as exc:
             if attempts <= settings.max_executor_retries:
                 await repo.update_task_status(task.id, TaskStatus.QUEUED, error=f'Retry {attempts}: {exc}')

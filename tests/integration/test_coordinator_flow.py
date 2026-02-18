@@ -88,6 +88,7 @@ def test_destructive_flow_waits_for_approval(monkeypatch):
     approval_msgs = [m for m in sent_messages if m['reply_markup']]
     assert approval_msgs
     assert 'needs approval' in approval_msgs[0]['text'].lower()
+    assert 'delete /tmp/a' in approval_msgs[0]['text'].lower()
 
 
 def test_blocked_shell_command_is_rejected(monkeypatch):

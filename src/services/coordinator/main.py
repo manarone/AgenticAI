@@ -83,6 +83,19 @@ def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> 
     return chunks
 
 
+def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 320) -> str:
+    command = str(payload.get('command', '')).strip().replace('\n', ' ')
+    if not command:
+        return f'Task {task_id[:8]} needs approval before running this command. Approve?'
+
+    if len(command) > max_command_len:
+        command = command[: max_command_len - 3].rstrip() + '...'
+
+    remote_host = str(payload.get('remote_host', '')).strip()
+    target = f' on {remote_host}' if remote_host else ''
+    return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n{command}\nApprove?'
+
+
 async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
     if reply_markup is not None:
         await telegram.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -497,9 +510,14 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         ]
                     ]
                 }
+                approval_text = (
+                    _shell_approval_message(task.id, payload)
+                    if task_type == TaskType.SHELL
+                    else f'Task {task.id[:8]} needs approval before running this command. Approve?'
+                )
                 await _send_telegram_message(
                     chat_id,
-                    f'Task {task.id[:8]} needs approval before running this command. Approve?',
+                    approval_text,
                     reply_markup=buttons,
                 )
                 await db.commit()
