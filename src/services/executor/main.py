@@ -258,7 +258,9 @@ async def _execute_task(task, envelope, repo: CoreRepository) -> str:
             skill_name=task.payload.get('skill_name', '').strip(),
             skill_input=task.payload.get('input', '').strip(),
         )
-    raise RuntimeError(f'Unsupported task type: {task_type.value}')
+    if task_type == TaskType.WEB:
+        raise NonRetriableExecutionError('Web tasks are handled inline by coordinator and should not reach executor.')
+    raise NonRetriableExecutionError(f'Unsupported task type: {task_type.value}')
 
 
 async def _process_task_once(message_id: str, envelope) -> None:

@@ -104,3 +104,26 @@ async def test_executor_rejects_remote_host_option_injection(monkeypatch):
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+
+
+async def test_remote_shell_uses_sanitized_env(monkeypatch):
+    from services.executor import main as executor_main
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'ok', b''
+
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured['env'] = kwargs.get('env')
+        return _FakeProc()
+
+    monkeypatch.setattr(executor_main, '_shell_env', lambda: {'PATH': '/usr/bin'})
+    monkeypatch.setattr(executor_main.asyncio, 'create_subprocess_exec', fake_create_subprocess_exec)
+
+    output = await executor_main._run_remote_shell('example-host', 'uname -a')
+    assert output == 'ok'
+    assert captured['env'] == {'PATH': '/usr/bin'}

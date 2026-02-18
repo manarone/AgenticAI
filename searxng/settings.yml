@@ -1,6 +1,5 @@
 use_default_settings: true
 server:
-  secret_key: "change-this-in-prod"
   limiter: false
 search:
   safe_search: 1

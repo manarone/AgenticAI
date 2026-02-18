@@ -48,3 +48,45 @@ async def test_executor_retries_then_fails():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts >= 2
+
+
+async def test_executor_web_task_fails_without_retry():
+    from services.executor.main import _process_task_once, bus
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        tenant, user, convo = await repo.get_or_create_default_tenant_user()
+        task = await repo.create_task(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            conversation_id=convo.id,
+            task_type='web',
+            risk_tier='L1',
+            payload={'query': 'latest ai news'},
+            status=TaskStatus.QUEUED,
+        )
+        await db.commit()
+
+    envelope = TaskEnvelope(
+        task_id=UUID(task.id),
+        tenant_id=UUID(tenant.id),
+        user_id=UUID(user.id),
+        task_type=TaskType.WEB,
+        payload={'query': 'latest ai news'},
+        risk_tier=RiskTier.L1,
+        created_at=datetime.utcnow(),
+    )
+
+    await _process_task_once('web-1', envelope)
+
+    results = await bus.read_results(consumer_name='test-web', count=10, block_ms=10)
+    assert results
+    _, failure = results[-1]
+    assert failure.success is False
+    assert 'handled inline by coordinator' in (failure.error or '').lower()
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1

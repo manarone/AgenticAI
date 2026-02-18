@@ -176,6 +176,7 @@ class LLMClient:
             )
         except (httpx.HTTPError, ValueError):
             # Provider may not support tools in this model/account. Fall back to plain chat.
+            logger.warning('Tool-capable chat failed; falling back to plain chat.', exc_info=True)
             fallback_text, in_tok, out_tok = await self.chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,

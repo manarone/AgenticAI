@@ -102,7 +102,7 @@ class SearxNGClient:
                         if not isinstance(raw_results, list):
                             continue
                         aggregated.extend(raw_results)
-                        if len(aggregated) >= limit:
+                        if len(self._normalize_results(aggregated, limit=limit)) >= limit:
                             break
         except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
             raise WebSearchUnavailableError() from exc
