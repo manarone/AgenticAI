@@ -237,6 +237,8 @@ def _readonly_reason(command: str) -> str | None:
     if not segments:
         return None
 
+    # Intentionally conservative: keep privileged wrappers (`sudo`/`env <subcommand>`) out of autorun.
+    # These can still be classified precisely by mutating/blocked paths.
     for segment in segments:
         parts = _tokens(segment)
         if parts is None:
@@ -279,8 +281,8 @@ def _mutating_reason(command: str) -> str | None:
         if parts is None:
             return 'shell_parse_error'
 
-        first = _command_name(parts[0]) if parts else ''
-        env_subcommand = _env_subcommand(parts) if first == 'env' else []
+        raw_first = _command_name(parts[0]) if parts else ''
+        invokes_env_subcommand = raw_first == 'env' and bool(_env_subcommand(parts))
 
         normalized_parts = _unwrap_prefixed_command(parts)
         first, second = _first_two_tokens(normalized_parts)
@@ -306,8 +308,8 @@ def _mutating_reason(command: str) -> str | None:
             return f'mutating_tool_{first}_{second}'
         if first in _NETWORK_MUTATING_TOOLS:
             return f'mutating_tool_{first}'
-        if env_subcommand:
-            return 'env_invokes_subcommand'
+        if invokes_env_subcommand:
+            return f'env_invokes_subcommand_{first}' if first else 'env_invokes_subcommand'
 
     return None
 

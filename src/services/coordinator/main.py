@@ -485,6 +485,8 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     action='memory_remember_failed',
                     details={'error': str(exc)},
                 )
+            # `sanitize_input` is pass-through for non-flagged messages today; shell policy sees the same command text
+            # that will be persisted/executed. Keep this invariant if sanitizer behavior changes in the future.
             try:
                 task_type, payload = _parse_task(sanitized)
             except ValueError as exc:
@@ -647,12 +649,12 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     if task_type == TaskType.SHELL
                     else f'Task {task.id[:8]} needs approval before running this command. Approve?'
                 )
+                await db.commit()
                 await _send_telegram_message(
                     chat_id,
                     approval_text,
                     reply_markup=buttons,
                 )
-                await db.commit()
                 return
 
             envelope = TaskEnvelope(

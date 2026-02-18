@@ -162,6 +162,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
                 and queued_grant.tenant_id == task.tenant_id
                 and queued_grant.user_id == task.user_id
                 and queued_grant.scope == SHELL_MUTATION_SCOPE
+                # Explicit revocation should invalidate both new and already-queued mutation tasks.
                 and queued_grant.revoked_at is None
                 and task.created_at <= queued_grant.expires_at
             ):
