@@ -96,6 +96,7 @@ services:
       MEM0_EMBEDDER_PROVIDER: ${MEM0_EMBEDDER_PROVIDER:-fastembed}
       MEM0_EMBEDDING_MODEL: ${MEM0_EMBEDDING_MODEL:-nomic-ai/nomic-embed-text-v1.5}
       MEM0_EMBEDDING_DIMS: ${MEM0_EMBEDDING_DIMS:-768}
+      MEM0_LLM_PROVIDER: ${MEM0_LLM_PROVIDER:-lmstudio}
       MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-minimax/minimax-m2.5}
       MEM0_HISTORY_DB_PATH: ${MEM0_HISTORY_DB_PATH:-/app/data/mem0-history.db}
       LAUNCH_EXECUTOR_JOB: "false"

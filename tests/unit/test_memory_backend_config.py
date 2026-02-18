@@ -33,6 +33,7 @@ def _install_mem0_stub(monkeypatch):
 def test_mem0_local_fastembed_does_not_require_openai_key(monkeypatch):
     _install_mem0_stub(monkeypatch)
     monkeypatch.setenv('MEM0_EMBEDDER_PROVIDER', 'fastembed')
+    monkeypatch.setenv('MEM0_LLM_PROVIDER', 'lmstudio')
     monkeypatch.setenv('OPENAI_API_KEY', '')
     get_settings.cache_clear()
 
@@ -53,9 +54,21 @@ def test_mem0_local_openai_embedder_requires_openai_key(monkeypatch):
         Mem0LocalMemoryStore()
 
 
+def test_mem0_local_openai_llm_requires_openai_key(monkeypatch):
+    _install_mem0_stub(monkeypatch)
+    monkeypatch.setenv('MEM0_EMBEDDER_PROVIDER', 'fastembed')
+    monkeypatch.setenv('MEM0_LLM_PROVIDER', 'openai')
+    monkeypatch.setenv('OPENAI_API_KEY', '')
+    get_settings.cache_clear()
+
+    with pytest.raises(ValueError, match='MEM0_LLM_PROVIDER=openai'):
+        Mem0LocalMemoryStore()
+
+
 def test_mem0_local_openai_embedder_uses_openai_key_when_set(monkeypatch):
     _install_mem0_stub(monkeypatch)
     monkeypatch.setenv('MEM0_EMBEDDER_PROVIDER', 'openai')
+    monkeypatch.setenv('MEM0_LLM_PROVIDER', 'openai')
     monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
     get_settings.cache_clear()
 

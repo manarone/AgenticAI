@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     mem0_embedder_provider: str = Field(default='fastembed', alias='MEM0_EMBEDDER_PROVIDER')
     mem0_embedding_model: str = Field(default='nomic-ai/nomic-embed-text-v1.5', alias='MEM0_EMBEDDING_MODEL')
     mem0_embedding_dims: int = Field(default=768, alias='MEM0_EMBEDDING_DIMS')
+    mem0_llm_provider: str = Field(default='openai', alias='MEM0_LLM_PROVIDER')
     mem0_llm_model: str = Field(default='minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
     mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
