@@ -123,12 +123,15 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
     )
     command_hash = _command_hash(command)
 
-    if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
-        SHELL_POLICY_ALLOW_COUNTER.inc()
-    elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
-        SHELL_POLICY_APPROVAL_COUNTER.inc()
-    else:
-        SHELL_POLICY_BLOCK_COUNTER.inc()
+    # Avoid double-counting policy decisions that were already classified in coordinator.
+    should_track_executor_policy_metrics = 'policy_decision' not in task.payload
+    if should_track_executor_policy_metrics:
+        if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
+            SHELL_POLICY_ALLOW_COUNTER.inc()
+        elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+            SHELL_POLICY_APPROVAL_COUNTER.inc()
+        else:
+            SHELL_POLICY_BLOCK_COUNTER.inc()
 
     await append_audit(
         repo.db,
@@ -154,7 +157,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
             action='execution_blocked_by_policy',
             details={'task_id': task.id, 'reason': shell_policy.reason, 'command_hash': command_hash},
         )
-        raise NonRetriableExecutionError(f'Command blocked by shell policy ({shell_policy.reason}).')
+        raise NonRetriableExecutionError('Command blocked by shell policy.')
 
     if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
         has_grant = await repo.has_active_approval_grant(task.tenant_id, task.user_id, scope=SHELL_MUTATION_SCOPE)
@@ -173,7 +176,7 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
                     'command_hash': command_hash,
                 },
             )
-            raise NonRetriableExecutionError('Command requires approval grant; no active grant found.')
+            raise NonRetriableExecutionError('Command requires approval.')
 
     if remote_host and not settings.shell_remote_enabled:
         await append_audit(

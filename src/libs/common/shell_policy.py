@@ -52,16 +52,14 @@ _MUTATING_PREFIXES = {
     'tee',
 }
 
-_MUTATING_KEYWORDS = [
-    r'\b(systemctl|service|supervisorctl)\b',
-    r'\b(apt|apt-get|yum|dnf|apk|brew|pip|pip3|poetry|npm|pnpm|yarn|gem|cargo)\b',
-    r'\b(docker|podman)\s+(run|exec|build|compose|rm|stop|restart|kill)\b',
-    r'\bkubectl\s+(apply|delete|patch|edit|replace|scale|rollout|drain|cordon|uncordon)\b',
-    r'\b(terraform|ansible|helm)\b',
-    r'\b(flyway|liquibase|alembic|migrate|prisma)\b',
-    r'\bgit\s+(commit|push|merge|rebase|reset|cherry-pick|stash|tag|checkout|switch|clean)\b',
-    r'\b(iptables|ufw|ifconfig|route|nmcli)\b',
-]
+_SERVICE_MANAGERS = {'systemctl', 'service', 'supervisorctl'}
+_PACKAGE_MANAGERS = {'apt', 'apt-get', 'yum', 'dnf', 'apk', 'brew', 'pip', 'pip3', 'poetry', 'npm', 'pnpm', 'yarn', 'gem', 'cargo'}
+_CONTAINER_MUTATING_SUBCOMMANDS = {'run', 'exec', 'build', 'compose', 'rm', 'stop', 'restart', 'kill'}
+_KUBECTL_MUTATING_SUBCOMMANDS = {'apply', 'delete', 'patch', 'edit', 'replace', 'scale', 'rollout', 'drain', 'cordon', 'uncordon'}
+_DEPLOY_TOOLS = {'terraform', 'ansible', 'helm'}
+_DB_MIGRATION_TOOLS = {'flyway', 'liquibase', 'alembic', 'migrate', 'prisma'}
+_GIT_MUTATING_SUBCOMMANDS = {'commit', 'push', 'merge', 'rebase', 'reset', 'cherry-pick', 'stash', 'tag', 'checkout', 'switch', 'clean'}
+_NETWORK_MUTATING_TOOLS = {'iptables', 'ufw', 'ifconfig', 'route', 'nmcli'}
 
 _COMMAND_SUBSTITUTION_PATTERN = re.compile(r'(?<!\\)\$\(|(?<!\\)`')
 
@@ -229,10 +227,22 @@ def _mutating_reason(command: str) -> str | None:
             return 'env_invokes_subcommand'
         if first == 'sed' and second == '-i':
             return 'in_place_edit'
-
-    for pattern in _MUTATING_KEYWORDS:
-        if re.search(pattern, normalized):
-            return f'keyword_{pattern}'
+        if first in _SERVICE_MANAGERS:
+            return f'mutating_tool_{first}'
+        if first in _PACKAGE_MANAGERS:
+            return f'mutating_tool_{first}'
+        if first in {'docker', 'podman'} and second in _CONTAINER_MUTATING_SUBCOMMANDS:
+            return f'mutating_tool_{first}_{second}'
+        if first == 'kubectl' and second in _KUBECTL_MUTATING_SUBCOMMANDS:
+            return f'mutating_tool_{first}_{second}'
+        if first in _DEPLOY_TOOLS:
+            return f'mutating_tool_{first}'
+        if first in _DB_MIGRATION_TOOLS:
+            return f'mutating_tool_{first}'
+        if first == 'git' and second in _GIT_MUTATING_SUBCOMMANDS:
+            return f'mutating_tool_{first}_{second}'
+        if first in _NETWORK_MUTATING_TOOLS:
+            return f'mutating_tool_{first}'
 
     return None
 

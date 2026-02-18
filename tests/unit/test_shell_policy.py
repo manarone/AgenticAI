@@ -35,6 +35,16 @@ def test_power_keyword_in_readonly_argument_is_not_hard_blocked():
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
 
 
+def test_mutating_tool_phrase_in_readonly_argument_does_not_require_approval():
+    result = classify_shell_command("grep 'systemctl restart nginx' /var/log/syslog")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
+def test_git_mutation_phrase_in_readonly_argument_does_not_require_approval():
+    result = classify_shell_command("grep 'git commit' /tmp/history.txt")
+    assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
+
+
 def test_disk_tool_keyword_in_readonly_argument_is_not_hard_blocked():
     result = classify_shell_command("cat '/tmp/mkfs notes.txt'")
     assert result.decision == ShellPolicyDecision.ALLOW_AUTORUN
