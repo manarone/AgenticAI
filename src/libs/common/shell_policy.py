@@ -26,7 +26,6 @@ _READ_ONLY_COMMANDS = {
     'tail',
     'rg',
     'grep',
-    'find',
     'stat',
     'df',
     'du',
@@ -35,7 +34,6 @@ _READ_ONLY_COMMANDS = {
     'id',
     'whoami',
     'date',
-    'env',
     'printenv',
 }
 
@@ -73,21 +71,77 @@ _BLOCK_PATTERNS = [
     (r'\binit\s+[06]\b', 'init_power_operation'),
 ]
 
+_FIND_MUTATING_TOKENS = {
+    '-delete',
+    '-exec',
+    '-execdir',
+    '-ok',
+    '-okdir',
+    '-fprint',
+    '-fprintf',
+    '-fprint0',
+    '-fls',
+}
+
 
 def _segments(command: str) -> list[str]:
     return [segment.strip() for segment in re.split(r'(?:&&|\|\||;|\|)', command) if segment.strip()]
 
 
-def _first_two_tokens(segment: str) -> tuple[str, str]:
+def _tokens(segment: str) -> list[str]:
     try:
-        parts = shlex.split(segment, posix=True)
+        return shlex.split(segment, posix=True)
     except ValueError:
-        return '', ''
+        return []
+
+
+def _first_two_tokens(segment: str) -> tuple[str, str]:
+    parts = _tokens(segment)
     if not parts:
         return '', ''
     first = parts[0].lower()
     second = parts[1].lower() if len(parts) > 1 else ''
     return first, second
+
+
+def _find_has_mutating_action(parts: list[str]) -> bool:
+    for token in parts[1:]:
+        lowered = token.lower()
+        if lowered in _FIND_MUTATING_TOKENS:
+            return True
+        if lowered.startswith('-exec') or lowered.startswith('-ok') or lowered.startswith('-fprint') or lowered.startswith('-fls'):
+            return True
+    return False
+
+
+def _env_subcommand(parts: list[str]) -> list[str]:
+    if not parts or parts[0].lower() != 'env':
+        return []
+
+    i = 1
+    while i < len(parts):
+        token = parts[i]
+        lowered = token.lower()
+
+        if token == '--':
+            i += 1
+            break
+
+        if lowered in {'-u', '--unset', '-c', '--chdir', '-s', '--split-string'}:
+            i += 2
+            continue
+
+        if token.startswith('-'):
+            i += 1
+            continue
+
+        if '=' in token and not token.startswith('='):
+            i += 1
+            continue
+
+        break
+
+    return parts[i:] if i < len(parts) else []
 
 
 def _readonly_reason(command: str) -> str | None:
@@ -96,10 +150,20 @@ def _readonly_reason(command: str) -> str | None:
         return None
 
     for segment in segments:
-        first, second = _first_two_tokens(segment)
+        parts = _tokens(segment)
+        if not parts:
+            return None
+
+        first = parts[0].lower()
+        second = parts[1].lower() if len(parts) > 1 else ''
+
         if not first:
             return None
         if first in _READ_ONLY_COMMANDS:
+            continue
+        if first == 'find' and not _find_has_mutating_action(parts):
+            continue
+        if first == 'env' and not _env_subcommand(parts):
             continue
         if first == 'git' and second in {'status', 'log', 'show', 'diff'}:
             continue
@@ -120,6 +184,10 @@ def _mutating_reason(command: str) -> str | None:
         first, second = _first_two_tokens(segment)
         if first in _MUTATING_PREFIXES:
             return f'mutating_prefix_{first}'
+        if first == 'find' and _find_has_mutating_action(_tokens(segment)):
+            return 'find_mutating_action'
+        if first == 'env' and _env_subcommand(_tokens(segment)):
+            return 'env_invokes_subcommand'
         if first == 'sed' and second == '-i':
             return 'in_place_edit'
 
@@ -155,18 +223,19 @@ def _blocked_reason(command: str) -> str | None:
 
 def _is_root_delete_command(command: str) -> bool:
     for segment in _segments(command):
-        try:
-            parts = shlex.split(segment, posix=True)
-        except ValueError:
+        parts = _tokens(segment)
+        if not parts:
             continue
-        if not parts or parts[0].lower() != 'rm':
+        first = parts[0].lower()
+        rm_parts = parts if first == 'rm' else (_env_subcommand(parts) if first == 'env' else [])
+        if not rm_parts or rm_parts[0].lower() != 'rm':
             continue
 
         has_recursive = False
         has_force = False
         root_targeted = False
 
-        for token in parts[1:]:
+        for token in rm_parts[1:]:
             lowered = token.lower()
             if token.startswith('-'):
                 if lowered in {'--recursive', '-r', '-R'} or ('r' in token and token.startswith('-')):
