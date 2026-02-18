@@ -470,8 +470,6 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                     mode=settings.shell_policy_mode,
                     allow_hard_block_override=settings.shell_allow_hard_block_override,
                 )
-                payload['policy_decision'] = shell_policy.decision.value
-                payload['policy_reason'] = shell_policy.reason
 
                 await append_audit(
                     db,
@@ -586,7 +584,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
-async def _queue_task_after_approval(repo: CoreRepository, task, approval_id: str, chat_id: str) -> None:
+async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> None:
     await repo.update_task_status(task.id, TaskStatus.QUEUED)
     try:
         risk_tier = RiskTier(task.risk_tier)
@@ -604,6 +602,14 @@ async def _queue_task_after_approval(repo: CoreRepository, task, approval_id: st
     )
     await bus.publish_task(envelope)
     _maybe_launch_executor_job(task.id)
+    await append_audit(
+        db,
+        tenant_id=task.tenant_id,
+        user_id=task.user_id,
+        actor='coordinator',
+        action='task_enqueued',
+        details={'task_id': task.id, 'task_type': task.task_type, 'risk_tier': risk_tier.value},
+    )
     await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
 
 
@@ -699,9 +705,9 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                             },
                         )
 
-                    await _queue_task_after_approval(repo, task, approval.id, chat_id)
+                    await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
             else:
-                await _queue_task_after_approval(repo, task, approval.id, chat_id)
+                await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
 
         await append_audit(
             db,
