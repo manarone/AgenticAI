@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
 import logging
+import re
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from uuid import UUID
@@ -16,9 +19,18 @@ from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
 from libs.common.k8s import ExecutorJobLauncher
 from libs.common.llm import LLMClient
 from libs.common.memory import get_memory_backend
-from libs.common.metrics import REQUEST_COUNTER, REQUEST_LATENCY, TOKEN_COUNTER, metrics_response
+from libs.common.metrics import (
+    REQUEST_COUNTER,
+    REQUEST_LATENCY,
+    SHELL_POLICY_ALLOW_COUNTER,
+    SHELL_POLICY_APPROVAL_COUNTER,
+    SHELL_POLICY_BLOCK_COUNTER,
+    TOKEN_COUNTER,
+    metrics_response,
+)
 from libs.common.models import Base
 from libs.common.risk import classify_risk, requires_approval
+from libs.common.shell_policy import ShellPolicyDecision, classify_shell_command
 from libs.common.schemas import TaskEnvelope
 from libs.common.sanitizer import sanitize_input
 from libs.common.state_machine import can_transition
@@ -35,6 +47,7 @@ job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
+SHELL_MUTATION_SCOPE = 'shell_mutation'
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -65,6 +78,19 @@ def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> 
         chunks.append(remaining[:split_at])
         remaining = remaining[split_at:].lstrip('\n')
     return chunks
+
+
+def _shell_approval_message(task_id: str, payload: dict, max_command_len: int = 320) -> str:
+    command = str(payload.get('command', '')).strip().replace('\n', ' ')
+    if not command:
+        return f'Task {task_id[:8]} needs approval before running this command. Approve?'
+
+    if len(command) > max_command_len:
+        command = command[: max_command_len - 3].rstrip() + '...'
+
+    remote_host = str(payload.get('remote_host', '')).strip()
+    target = f' on {remote_host}' if remote_host else ''
+    return f'Task {task_id[:8]} needs approval before running this shell command{target}:\n{command}\nApprove?'
 
 
 async def _send_telegram_message(chat_id: str, text: str, reply_markup: dict | None = None) -> None:
@@ -206,6 +232,15 @@ async def metrics():
 def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     lowered = user_text.lower().strip()
 
+    if lowered.startswith('shell@'):
+        stripped = user_text.strip()
+        shell_target = stripped[len('shell@') :].strip()
+        parsed = _split_remote_shell_target(shell_target)
+        if parsed:
+            remote_host, command = parsed
+            return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
+        return TaskType.SHELL, {'command': shell_target}
+
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
         skill_name, _, arg = rest.strip().partition(' ')
@@ -220,6 +255,57 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
         return TaskType.FILE, {'instruction': instruction.strip()}
 
     return None, {}
+
+
+def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
+    target = shell_target.strip()
+    if not target:
+        return None
+
+    # Bracketed IPv6 (optionally with :port) has an unambiguous command separator.
+    bracketed = re.match(r'^(?P<host>\[[^\]]+\](?::\d+)?):(?P<command>.+)$', target)
+    if bracketed:
+        host = bracketed.group('host').strip()
+        command = bracketed.group('command').strip()
+        if host and command:
+            return host, command
+
+    first_space = next((index for index, ch in enumerate(target) if ch.isspace()), -1)
+    if first_space > 0:
+        sep = target.rfind(':', 0, first_space)
+        if sep > 0:
+            host = target[:sep].strip()
+            command = target[sep + 1 :].strip()
+            if host and command and all(not ch.isspace() for ch in host):
+                return host, command
+
+    host_port = re.match(r'^(?P<host>[^:\s]+):(?P<port>\d+):(?P<command>.+)$', target)
+    if host_port:
+        host = f"{host_port.group('host')}:{host_port.group('port')}"
+        command = host_port.group('command').strip()
+        if command:
+            return host, command
+
+    # For unbracketed IPv6 hosts, prefer the right-most split whose host parses as IPv6.
+    for index in range(len(target) - 1, -1, -1):
+        if target[index] != ':':
+            continue
+        host = target[:index].strip()
+        command = target[index + 1 :].strip()
+        if not host or not command:
+            continue
+        try:
+            ipaddress.IPv6Address(host)
+            return host, command
+        except ValueError:
+            continue
+
+    host, sep, command = target.partition(':')
+    host = host.strip()
+    command = command.strip()
+    if sep and host and command:
+        return host, command
+    return None
 
 
 async def _handle_start_command(
@@ -263,6 +349,20 @@ async def _handle_status_command(repo: CoreRepository, identity, chat_id: str, t
 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
     parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[1].strip().lower() in {'grant', 'grants'}:
+        revoked = await repo.revoke_approval_grants(identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE)
+        await append_audit(
+            db,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            actor='user',
+            action='approval_grant_revoked',
+            details={'scope': SHELL_MUTATION_SCOPE, 'count': revoked},
+        )
+        await db.commit()
+        await _send_telegram_message(chat_id, f'Revoked {revoked} shell approval grant(s).')
+        return
+
     if len(parts) == 1 or parts[1].strip().lower() == 'all':
         task_ids = await repo.cancel_user_tasks(identity.tenant_id, identity.user_id)
         for task_id in task_ids:
@@ -314,6 +414,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 )
             task_type, payload = _parse_task(sanitized)
             risk = classify_risk(sanitized)
+            shell_requires_approval = False
 
             if task_type is None:
                 try:
@@ -361,7 +462,68 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 await _send_telegram_message(chat_id, response)
                 return
 
-            status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
+            if task_type == TaskType.SHELL:
+                command = payload.get('command', '').strip()
+                command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
+                shell_policy = classify_shell_command(
+                    command,
+                    mode=settings.shell_policy_mode,
+                    allow_hard_block_override=settings.shell_allow_hard_block_override,
+                )
+
+                await append_audit(
+                    db,
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    actor='coordinator',
+                    action='command_classification_decision',
+                    details={
+                        'task_type': 'shell',
+                        'decision': shell_policy.decision.value,
+                        'reason': shell_policy.reason,
+                        'command_hash': command_hash,
+                    },
+                )
+
+                if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
+                    SHELL_POLICY_ALLOW_COUNTER.inc()
+                elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    SHELL_POLICY_APPROVAL_COUNTER.inc()
+                else:
+                    SHELL_POLICY_BLOCK_COUNTER.inc()
+
+                if shell_policy.decision == ShellPolicyDecision.BLOCKED:
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='execution_blocked_by_policy',
+                        details={'task_type': 'shell', 'reason': shell_policy.reason, 'command_hash': command_hash},
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, f'Shell command blocked by safety policy ({shell_policy.reason}).')
+                    return
+
+                if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    has_grant = await repo.has_active_approval_grant(
+                        identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE
+                    )
+                    shell_requires_approval = not has_grant
+                    if has_grant:
+                        await append_audit(
+                            db,
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                            actor='coordinator',
+                            action='approval_grant_reused',
+                            details={'scope': SHELL_MUTATION_SCOPE, 'command_hash': command_hash},
+                        )
+
+            if task_type == TaskType.SHELL:
+                status = TaskStatus.WAITING_APPROVAL if shell_requires_approval else TaskStatus.QUEUED
+            else:
+                status = TaskStatus.WAITING_APPROVAL if requires_approval(sanitized) else TaskStatus.QUEUED
             task = await repo.create_task(
                 tenant_id=identity.tenant_id,
                 user_id=identity.user_id,
@@ -384,9 +546,14 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         ]
                     ]
                 }
+                approval_text = (
+                    _shell_approval_message(task.id, payload)
+                    if task_type == TaskType.SHELL
+                    else f'Task {task.id[:8]} needs approval before running this command. Approve?'
+                )
                 await _send_telegram_message(
                     chat_id,
-                    f'Task {task.id[:8]} needs approval for destructive action. Approve?',
+                    approval_text,
                     reply_markup=buttons,
                 )
                 await db.commit()
@@ -417,6 +584,35 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
+async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> None:
+    await repo.update_task_status(task.id, TaskStatus.QUEUED)
+    try:
+        risk_tier = RiskTier(task.risk_tier)
+    except ValueError:
+        risk_tier = classify_risk(str(task.payload))
+    envelope = TaskEnvelope(
+        task_id=UUID(task.id),
+        tenant_id=UUID(task.tenant_id),
+        user_id=UUID(task.user_id),
+        task_type=TaskType(task.task_type),
+        payload=task.payload,
+        risk_tier=risk_tier,
+        approval_id=UUID(approval_id),
+        created_at=datetime.utcnow(),
+    )
+    await bus.publish_task(envelope)
+    _maybe_launch_executor_job(task.id)
+    await append_audit(
+        db,
+        tenant_id=task.tenant_id,
+        user_id=task.user_id,
+        actor='coordinator',
+        action='task_enqueued',
+        details={'task_id': task.id, 'task_type': task.task_type, 'risk_tier': risk_tier.value},
+    )
+    await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+
+
 @app.post('/telegram/webhook')
 async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
     REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
@@ -437,7 +633,10 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             return {'ok': True}
 
         decision = ApprovalDecision.APPROVED if action == 'approve' else ApprovalDecision.DENIED
-        await repo.set_approval_decision(approval.id, decision)
+        approval = await repo.set_approval_decision(approval.id, decision)
+        if approval is None:
+            await telegram.answer_callback_query(callback_query_id, 'Approval already processed.')
+            return {'ok': True}
         task = await repo.get_task(approval.task_id)
 
         if not task:
@@ -445,29 +644,70 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             await telegram.answer_callback_query(callback_query_id, 'Task not found')
             return {'ok': True}
 
+        callback_text = decision.value
+
         if decision == ApprovalDecision.DENIED:
             await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
             await bus.publish_cancel(task.id)
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
-            await repo.update_task_status(task.id, TaskStatus.QUEUED)
-            try:
-                risk_tier = RiskTier(task.risk_tier)
-            except ValueError:
-                risk_tier = classify_risk(str(task.payload))
-            envelope = TaskEnvelope(
-                task_id=UUID(task.id),
-                tenant_id=UUID(task.tenant_id),
-                user_id=UUID(task.user_id),
-                task_type=TaskType(task.task_type),
-                payload=task.payload,
-                risk_tier=risk_tier,
-                approval_id=UUID(approval.id),
-                created_at=datetime.utcnow(),
-            )
-            await bus.publish_task(envelope)
-            _maybe_launch_executor_job(task.id)
-            await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+            if task.task_type == TaskType.SHELL.value:
+                command = str(task.payload.get('command', '')).strip()
+                command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
+                shell_policy = classify_shell_command(
+                    command,
+                    mode=settings.shell_policy_mode,
+                    allow_hard_block_override=settings.shell_allow_hard_block_override,
+                )
+                if shell_policy.decision == ShellPolicyDecision.BLOCKED:
+                    callback_text = 'Blocked by safety policy'
+                    await repo.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error=f'Blocked by shell policy during approval ({shell_policy.reason})',
+                    )
+                    await append_audit(
+                        db,
+                        tenant_id=task.tenant_id,
+                        user_id=task.user_id,
+                        actor='coordinator',
+                        action='execution_blocked_by_policy',
+                        details={
+                            'task_id': task.id,
+                            'task_type': 'shell',
+                            'reason': shell_policy.reason,
+                            'command_hash': command_hash,
+                        },
+                    )
+                    await _send_telegram_message(
+                        chat_id,
+                        f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
+                    )
+                else:
+                    if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                        grant, refreshed = await repo.issue_approval_grant(
+                            tenant_id=task.tenant_id,
+                            user_id=task.user_id,
+                            scope=SHELL_MUTATION_SCOPE,
+                            ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
+                        )
+                        await append_audit(
+                            db,
+                            tenant_id=task.tenant_id,
+                            user_id=task.user_id,
+                            actor='coordinator',
+                            action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
+                            details={
+                                'scope': SHELL_MUTATION_SCOPE,
+                                'grant_id': grant.id,
+                                'expires_at': grant.expires_at.isoformat(),
+                                'command_hash': command_hash,
+                            },
+                        )
+
+                    await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
+            else:
+                await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
 
         await append_audit(
             db,
@@ -478,7 +718,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             details={'approval_id': approval.id, 'decision': decision.value, 'task_id': task.id},
         )
         await db.commit()
-        await telegram.answer_callback_query(callback_query_id, f'{decision.value}')
+        await telegram.answer_callback_query(callback_query_id, callback_text)
         return {'ok': True}
 
     message = payload.get('message', {})

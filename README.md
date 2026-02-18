@@ -39,8 +39,6 @@ Cloud mem0 is still supported via `MEMORY_BACKEND=mem0_api` and `MEM0_API_KEY`.
 
 For `MEMORY_BACKEND=mem0_local`, embeddings default to local `fastembed` (`MEM0_EMBEDDER_PROVIDER=fastembed`).
 The first request downloads the embedding model weights and can take ~30-120s depending on network/CPU.
-Default local stack uses `MEM0_LLM_PROVIDER=lmstudio` to avoid requiring an OpenAI key for mem0 init.
-Set `MEM0_LLM_BASE_URL` to your OpenAI-compatible local endpoint (default: `http://localhost:1234/v1`) if you enable mem0 inference/rerank paths.
 
 ## Tests
 ```bash
