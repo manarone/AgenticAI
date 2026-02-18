@@ -414,7 +414,7 @@ def _is_fork_bomb_command(command: str) -> bool:
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError:
-        return False
+        return _looks_like_fork_bomb_text(command)
 
     chunks: list[list[str]] = []
     current: list[str] = []
@@ -445,6 +445,8 @@ def _is_root_delete_command(command: str) -> bool:
     for segment in _segments(command):
         parts = _tokens(segment)
         if parts is None:
+            if _looks_like_root_delete_text(segment):
+                return True
             continue
         rm_parts = _unwrap_prefixed_command(parts)
         if not rm_parts or _command_name(rm_parts[0]) != 'rm':
@@ -481,6 +483,55 @@ def _is_root_delete_command(command: str) -> bool:
             return True
 
     return False
+
+
+def _looks_like_fork_bomb_text(command: str) -> bool:
+    lowered = ' '.join(command.lower().split())
+    return ':(){' in lowered and ':|:&' in lowered and '};:' in lowered
+
+
+def _looks_like_root_delete_text(segment: str) -> bool:
+    lowered = ' '.join(segment.lower().split())
+    tokens = lowered.split()
+    if not tokens:
+        return False
+
+    command_index = -1
+    for index, token in enumerate(tokens):
+        if _command_name(token) == 'rm':
+            command_index = index
+            break
+    if command_index < 0:
+        return False
+
+    has_recursive = False
+    has_force = False
+    root_targeted = False
+
+    for token in tokens[command_index + 1 :]:
+        cleaned = token.strip("'\"")
+        if cleaned.startswith('-'):
+            if cleaned.startswith('--'):
+                if cleaned == '--recursive':
+                    has_recursive = True
+                if cleaned == '--force':
+                    has_force = True
+                if cleaned == '--no-preserve-root':
+                    root_targeted = True
+            else:
+                short_flags = cleaned[1:]
+                if 'r' in short_flags:
+                    has_recursive = True
+                if 'f' in short_flags:
+                    has_force = True
+            continue
+
+        if cleaned in {'/', '/*', '/.*', '/.', '/..'}:
+            root_targeted = True
+        elif cleaned.startswith('/*') or cleaned.startswith('/.*'):
+            root_targeted = True
+
+    return has_recursive and has_force and root_targeted
 
 
 def classify_shell_command(

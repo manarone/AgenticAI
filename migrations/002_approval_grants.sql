@@ -3,11 +3,11 @@ CREATE TABLE IF NOT EXISTS approval_grants (
   tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   scope TEXT NOT NULL,
-  issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  revoked_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  issued_at TIMESTAMP NOT NULL DEFAULT now(),
+  expires_at TIMESTAMP NOT NULL,
+  revoked_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_grants_tenant_user_scope
