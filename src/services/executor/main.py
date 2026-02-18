@@ -39,7 +39,7 @@ WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 SHELL_MUTATION_SCOPE = 'shell_mutation'
 logger = logging.getLogger(__name__)
-_REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:-]+$')
+_REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 
 
 def _command_hash(command: str) -> str:

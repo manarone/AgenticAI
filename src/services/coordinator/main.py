@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from uuid import UUID
@@ -46,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
 SHELL_MUTATION_SCOPE = 'shell_mutation'
+REMOTE_SHELL_TARGET_RE = re.compile(
+    r'^shell@(?P<host>(?:\[[^\]]+\]|[^:\s]+)(?::\d+)?):(?P<command>.+)$',
+    flags=re.IGNORECASE,
+)
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -218,11 +223,23 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     lowered = user_text.lower().strip()
 
     if lowered.startswith('shell@'):
-        shell_target, _, command = user_text.partition(':')
-        remote_host = shell_target[len('shell@') :].strip()
-        if remote_host and command.strip():
-            return TaskType.SHELL, {'command': command.strip(), 'remote_host': remote_host}
-        return TaskType.SHELL, {'command': command.strip()}
+        stripped = user_text.strip()
+        shell_target, sep, command = stripped.rpartition(':')
+        if sep and shell_target.lower().startswith('shell@'):
+            remote_host = shell_target[len('shell@') :].strip()
+            command = command.strip()
+            if remote_host and command and all(not ch.isspace() for ch in remote_host):
+                return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
+
+        match = REMOTE_SHELL_TARGET_RE.match(stripped)
+        if match:
+            remote_host = match.group('host').strip()
+            command = match.group('command').strip()
+            if remote_host and command:
+                return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
+            return TaskType.SHELL, {'command': command}
+
+        return TaskType.SHELL, {'command': stripped[len('shell@') :].strip()}
 
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')

@@ -71,6 +71,8 @@ _BLOCK_PATTERNS = [
     (r'\binit\s+[06]\b', 'init_power_operation'),
 ]
 
+_COMMAND_SUBSTITUTION_PATTERN = re.compile(r'(?<!\\)\$\(|(?<!\\)`')
+
 _FIND_MUTATING_TOKENS = {
     '-delete',
     '-exec',
@@ -185,6 +187,9 @@ def _mutating_reason(command: str) -> str | None:
     normalized = command.lower().strip()
     if not normalized:
         return 'empty_command'
+
+    if _COMMAND_SUBSTITUTION_PATTERN.search(command):
+        return 'shell_command_substitution'
 
     if _has_output_redirection(command):
         return 'output_redirection'

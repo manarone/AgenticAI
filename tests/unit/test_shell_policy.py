@@ -68,3 +68,15 @@ def test_env_wrapped_absolute_path_rm_rf_root_is_hard_blocked():
     result = classify_shell_command('env -i /bin/rm -rf /')
     assert result.decision == ShellPolicyDecision.BLOCKED
     assert result.reason == 'rm_rf_root'
+
+
+def test_command_substitution_requires_approval():
+    result = classify_shell_command('ls $(touch /tmp/pwn)')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'shell_command_substitution'
+
+
+def test_backtick_substitution_requires_approval():
+    result = classify_shell_command('cat `touch /tmp/pwn`')
+    assert result.decision == ShellPolicyDecision.REQUIRE_APPROVAL
+    assert result.reason == 'shell_command_substitution'
