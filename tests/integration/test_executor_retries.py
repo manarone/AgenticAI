@@ -19,7 +19,7 @@ async def test_executor_retries_then_fails():
             conversation_id=convo.id,
             task_type='shell',
             risk_tier='L2',
-            payload={'command': 'uname -a'},
+            payload={'command': 'cat /definitely/missing/file'},
             status=TaskStatus.QUEUED,
         )
         await db.commit()
@@ -29,7 +29,7 @@ async def test_executor_retries_then_fails():
         tenant_id=UUID(tenant.id),
         user_id=UUID(user.id),
         task_type=TaskType.SHELL,
-        payload={'command': 'uname -a'},
+        payload={'command': 'cat /definitely/missing/file'},
         risk_tier=RiskTier.L2,
         created_at=datetime.utcnow(),
     )
@@ -48,3 +48,4 @@ async def test_executor_retries_then_fails():
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts >= 2
+        assert updated.status == TaskStatus.FAILED

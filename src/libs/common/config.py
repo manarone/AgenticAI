@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     mem0_embedder_provider: str = Field(default='fastembed', alias='MEM0_EMBEDDER_PROVIDER')
     mem0_embedding_model: str = Field(default='nomic-ai/nomic-embed-text-v1.5', alias='MEM0_EMBEDDING_MODEL')
     mem0_embedding_dims: int = Field(default=768, alias='MEM0_EMBEDDING_DIMS')
+    # Backward-compatible local Mem0 LLM knobs; omitted from sample env but still supported.
     mem0_llm_provider: str = Field(default='lmstudio', alias='MEM0_LLM_PROVIDER')
     mem0_llm_model: str = Field(default='minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
     mem0_llm_base_url: str = Field(default='http://localhost:1234/v1', alias='MEM0_LLM_BASE_URL')
@@ -55,6 +56,22 @@ class Settings(BaseSettings):
 
     max_executor_retries: int = Field(default=2, alias='MAX_EXECUTOR_RETRIES')
     task_timeout_seconds: int = Field(default=120, alias='TASK_TIMEOUT_SECONDS')
+    shell_policy_mode: str = Field(default='balanced', alias='SHELL_POLICY_MODE')
+    shell_work_dir: str = Field(default='/tmp/agentai', alias='SHELL_WORK_DIR')
+    shell_max_output_chars: int = Field(default=4000, alias='SHELL_MAX_OUTPUT_CHARS')
+    shell_allow_hard_block_override: bool = Field(default=False, alias='SHELL_ALLOW_HARD_BLOCK_OVERRIDE')
+    shell_mutation_grant_ttl_minutes: int = Field(default=10, alias='SHELL_MUTATION_GRANT_TTL_MINUTES')
+    shell_remote_enabled: bool = Field(default=False, alias='SHELL_REMOTE_ENABLED')
+    shell_timeout_seconds: int = Field(default=120, alias='SHELL_TIMEOUT_SECONDS')
+    shell_env_allowlist: str = Field(default='PATH,HOME,LANG,LC_ALL,TERM,TZ', alias='SHELL_ENV_ALLOWLIST')
+
+    @field_validator('shell_policy_mode')
+    @classmethod
+    def _validate_shell_policy_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {'balanced', 'strict', 'permissive'}:
+            raise ValueError('SHELL_POLICY_MODE must be one of: balanced, strict, permissive')
+        return normalized
 
 
 @lru_cache(maxsize=1)
