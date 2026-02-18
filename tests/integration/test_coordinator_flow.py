@@ -187,6 +187,35 @@ def test_clear_command_alias_starts_new_conversation(monkeypatch):
     assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
+def test_news_command_does_not_reset_conversation(monkeypatch):
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1314}, 'chat': {'id': 1314}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': '/news', 'from': {'id': 1314}, 'chat': {'id': 1314}}},
+        )
+        assert resp.status_code == 200
+
+        conversations = asyncio.run(_conversation_ids_for_user(1314))
+        assert len(conversations) == 1
+
+    assert not any('started a new conversation' in m['text'].lower() for m in sent_messages)
+
+
 def test_destructive_flow_waits_for_approval(monkeypatch):
     from services.coordinator.main import app, telegram
 
@@ -773,7 +802,7 @@ def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
             '/telegram/webhook',
             json={
                 'message': {
-                    'text': 'use web_search was a new capability added, search and find me the weather in mountain view california today',
+                    'text': 'use web_search search and find me the weather in mountain view california today',
                     'from': {'id': 1313},
                     'chat': {'id': 1313},
                 }

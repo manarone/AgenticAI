@@ -488,9 +488,6 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
     if lowered.startswith('use web_search'):
         query = user_text[len('use web_search') :].strip(" \t:-,")
         lowered_query = query.lower()
-        if lowered_query.startswith('was a new capability added'):
-            query = query[len('was a new capability added') :].strip(" \t:-,")
-            lowered_query = query.lower()
         for prefix in ('search and find me', 'search for', 'find me'):
             if lowered_query.startswith(prefix):
                 query = query[len(prefix) :].strip(" \t:-,")
@@ -586,6 +583,14 @@ def _is_valid_remote_host(host: str) -> bool:
     if normalized.startswith('-'):
         return False
     return bool(_REMOTE_HOST_RE.fullmatch(normalized))
+
+
+def _matches_telegram_command(text: str, command: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    prefix = f'/{command}'
+    return normalized == prefix or normalized.startswith(prefix + ' ')
 
 
 async def _handle_start_command(
@@ -1204,7 +1209,7 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
     if not text:
         return {'ok': True}
 
-    if text.startswith('/start'):
+    if _matches_telegram_command(text, 'start'):
         await _handle_start_command(repo, db, chat_id, telegram_user_id, text)
         return {'ok': True}
 
@@ -1213,16 +1218,16 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         await _send_telegram_message(chat_id, 'This bot is private. Use /start <invite_code> first.')
         return {'ok': True}
 
-    if text.startswith('/status'):
+    if _matches_telegram_command(text, 'status'):
         await _handle_status_command(repo, identity, chat_id, text)
         await db.commit()
         return {'ok': True}
 
-    if text.startswith('/new') or text.startswith('/clear'):
+    if _matches_telegram_command(text, 'new') or _matches_telegram_command(text, 'clear'):
         await _handle_new_command(repo, db, identity, chat_id, text)
         return {'ok': True}
 
-    if text.startswith('/cancel'):
+    if _matches_telegram_command(text, 'cancel'):
         await _handle_cancel_command(repo, db, identity, chat_id, text)
         return {'ok': True}
 
