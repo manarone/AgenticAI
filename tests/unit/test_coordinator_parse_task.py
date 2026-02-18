@@ -46,3 +46,31 @@ def test_parse_shell_remote_invalid_host_chars_sets_parse_error():
     task_type, payload = _parse_task('shell@./badhost:uname -a')
     assert task_type == TaskType.SHELL
     assert payload['remote_parse_error'] is True
+
+
+def test_parse_time_sensitive_weather_nl_query_routes_to_web():
+    task_type, payload = _parse_task('search and find me the weather in mountain view california today')
+    assert task_type == TaskType.WEB
+    assert payload['forced_nl_web_route'] is True
+    assert payload['time_sensitive'] is True
+    assert payload['query'] == 'the weather in mountain view california today'
+
+
+def test_parse_time_sensitive_news_nl_query_routes_to_web():
+    task_type, payload = _parse_task('tell me new ai news that came out today')
+    assert task_type == TaskType.WEB
+    assert payload['forced_nl_web_route'] is True
+    assert payload['news_intent'] is True
+    assert payload['query'] == 'new ai news that came out today'
+
+
+def test_parse_non_time_sensitive_news_stays_non_web():
+    task_type, payload = _parse_task('tell me ai news')
+    assert task_type is None
+    assert payload == {}
+
+
+def test_parse_research_word_does_not_trigger_search_phrase_match():
+    task_type, payload = _parse_task('please research weather patterns today')
+    assert task_type is None
+    assert payload == {}

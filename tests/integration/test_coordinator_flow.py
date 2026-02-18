@@ -758,7 +758,7 @@ def test_non_command_tool_response_appends_citations(monkeypatch):
         )
         resp = client.post(
             '/telegram/webhook',
-            json={'message': {'text': 'what happened in ai today?', 'from': {'id': 701}, 'chat': {'id': 701}}},
+            json={'message': {'text': 'what are the major AI trends?', 'from': {'id': 701}, 'chat': {'id': 701}}},
         )
         assert resp.status_code == 200
 
@@ -776,10 +776,12 @@ def test_web_command_returns_sources(monkeypatch):
     async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
-    async def fake_search(query, *, depth='balanced', max_results=None):
+    async def fake_search(query, *, depth='balanced', max_results=None, time_range=None, categories=None):
         return {
             'query': query,
             'depth': depth,
+            'time_range': time_range,
+            'categories': categories,
             'results': [
                 {'title': 'Source A', 'url': 'https://a.example', 'snippet': 'a'},
                 {'title': 'Source B', 'url': 'https://b.example', 'snippet': 'b'},
@@ -802,9 +804,11 @@ def test_web_command_returns_sources(monkeypatch):
         assert resp.status_code == 200
 
     final_msg = sent_messages[-1]['text']
-    assert 'top web results for:' in final_msg.lower()
+    assert 'web summary for:' in final_msg.lower()
+    assert 'as of' in final_msg.lower()
     assert 'sources:' in final_msg.lower()
     assert 'https://a.example' in final_msg
+    assert '(date: unknown)' in final_msg
 
 
 def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
@@ -816,11 +820,13 @@ def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
     async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
-    async def fake_search(query, *, depth='balanced', max_results=None):
+    async def fake_search(query, *, depth='balanced', max_results=None, time_range=None, categories=None):
         seen_queries.append(query)
         return {
             'query': query,
             'depth': depth,
+            'time_range': time_range,
+            'categories': categories,
             'results': [
                 {'title': 'MV Weather', 'url': 'https://weather.example/mv', 'snippet': 'Sunny and mild'},
             ],
@@ -849,7 +855,76 @@ def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
 
     assert seen_queries
     assert 'weather in mountain view california today' in seen_queries[-1].lower()
-    assert any('top web results for:' in m['text'].lower() for m in sent_messages)
+    assert any('web summary for:' in m['text'].lower() for m in sent_messages)
+    assert any('warning:' in m['text'].lower() for m in sent_messages)
+
+
+def test_time_sensitive_news_nl_query_uses_deterministic_web_path(monkeypatch):
+    from services.coordinator.main import app, llm, telegram, web_search_client
+
+    sent_messages = []
+    seen_queries = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_search(query, *, depth='balanced', max_results=None, time_range=None, categories=None):
+        seen_queries.append(
+            {
+                'query': query,
+                'depth': depth,
+                'max_results': max_results,
+                'time_range': time_range,
+                'categories': categories,
+            }
+        )
+        return {
+            'query': query,
+            'depth': depth,
+            'time_range': time_range,
+            'categories': categories,
+            'results': [
+                {
+                    'title': 'Reuters AI',
+                    'url': 'https://reuters.example/ai',
+                    'snippet': 'A market update on AI spending.',
+                    'published_at': None,
+                }
+            ],
+        }
+
+    async def fail_chat_with_tools(**kwargs):
+        raise AssertionError('LLM tool mode should not run for forced time-sensitive NL web queries')
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(web_search_client, 'search', fake_search)
+    monkeypatch.setattr(llm, 'chat_with_tools', fail_chat_with_tools)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1316}, 'chat': {'id': 1316}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={
+                'message': {
+                    'text': 'tell me new ai news that came out today',
+                    'from': {'id': 1316},
+                    'chat': {'id': 1316},
+                }
+            },
+        )
+        assert resp.status_code == 200
+
+    assert seen_queries
+    assert seen_queries[-1]['time_range'] == 'day'
+    assert seen_queries[-1]['categories'] == 'news'
+    final_msg = sent_messages[-1]['text']
+    assert 'web summary for:' in final_msg.lower()
+    assert 'warning:' in final_msg.lower()
+    assert '(date: unknown)' in final_msg
 
 
 def test_web_command_fail_open_notice(monkeypatch):
@@ -860,7 +935,7 @@ def test_web_command_fail_open_notice(monkeypatch):
     async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
         sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
 
-    async def fake_search(query, *, depth='balanced', max_results=None):
+    async def fake_search(query, *, depth='balanced', max_results=None, time_range=None, categories=None):
         raise WebSearchUnavailableError('Live web search is currently unavailable.')
 
     async def fake_chat(system_prompt, user_prompt, memory=None):
@@ -938,7 +1013,7 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
         )
         resp = client.post(
             '/telegram/webhook',
-            json={'message': {'text': 'what happened today?', 'from': {'id': 1101}, 'chat': {'id': 1101}}},
+            json={'message': {'text': 'summarize AI fundamentals', 'from': {'id': 1101}, 'chat': {'id': 1101}}},
         )
         assert resp.status_code == 200
 

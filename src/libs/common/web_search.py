@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 
@@ -51,6 +52,16 @@ class SearxNGClient:
         return max(1, min(int(requested), self.max_results))
 
     @staticmethod
+    def _normalize_published_at(item: dict) -> str | None:
+        if not isinstance(item, dict):
+            return None
+        for key in ('publishedDate', 'published_at', 'publishedAt', 'pubdate', 'date'):
+            value = str(item.get(key, '') or '').strip()
+            if value:
+                return value
+        return None
+
+    @staticmethod
     def _normalize_results(raw_results: list, *, limit: int) -> list[dict]:
         seen_urls: set[str] = set()
         normalized_results: list[dict] = []
@@ -70,7 +81,7 @@ class SearxNGClient:
                     'url': url,
                     'snippet': str(item.get('content', '') or '').strip(),
                     'engine': str(item.get('engine', '') or '').strip() or None,
-                    'published_at': str(item.get('publishedDate', '') or '').strip() or None,
+                    'published_at': SearxNGClient._normalize_published_at(item),
                 }
             )
             if len(normalized_results) >= limit:
@@ -105,7 +116,15 @@ class SearxNGClient:
         await self._client.aclose()
         self._client = None
 
-    async def search(self, query: str, *, depth: str = 'balanced', max_results: int | None = None) -> dict:
+    async def search(
+        self,
+        query: str,
+        *,
+        depth: str = 'balanced',
+        max_results: int | None = None,
+        time_range: Literal['day', 'week', 'month', 'year'] | None = None,
+        categories: str | None = None,
+    ) -> dict:
         normalized_query = self._normalize_query(query)
         if not normalized_query:
             raise ValueError('Search query cannot be empty.')
@@ -119,14 +138,20 @@ class SearxNGClient:
                 client = await self._get_client()
                 aggregated: list[dict] = []
                 for page in range(1, pages + 1):
+                    params = {
+                        'q': normalized_query,
+                        'format': 'json',
+                        'safesearch': '1',
+                        'pageno': page,
+                    }
+                    if time_range in {'day', 'week', 'month', 'year'}:
+                        params['time_range'] = time_range
+                    normalized_categories = (categories or '').strip()
+                    if normalized_categories:
+                        params['categories'] = normalized_categories
                     response = await client.get(
                         f'{self.base_url}/search',
-                        params={
-                            'q': normalized_query,
-                            'format': 'json',
-                            'safesearch': '1',
-                            'pageno': page,
-                        },
+                        params=params,
                         headers={'Accept': 'application/json'},
                     )
                     response.raise_for_status()
@@ -145,5 +170,7 @@ class SearxNGClient:
         return {
             'query': normalized_query,
             'depth': normalized_depth,
+            'time_range': time_range,
+            'categories': (categories or '').strip() or None,
             'results': normalized_results,
         }

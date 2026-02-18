@@ -34,7 +34,7 @@ spec:
       volumes:
         - name: searxng-settings
           secret:
-            name: searxng-settings
+            secretName: searxng-settings
 ---
 apiVersion: v1
 kind: Secret

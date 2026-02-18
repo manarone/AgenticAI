@@ -61,6 +61,8 @@ async def test_search_success_and_result_clamp(monkeypatch):
     assert len(result['results']) == 2
     assert result['results'][0]['title'] == 'A'
     assert fake_client.calls[0]['kwargs']['params']['pageno'] == 1
+    assert 'time_range' not in fake_client.calls[0]['kwargs']['params']
+    assert 'categories' not in fake_client.calls[0]['kwargs']['params']
 
 
 @pytest.mark.asyncio
@@ -84,6 +86,37 @@ async def test_search_malformed_payload_returns_empty_results(monkeypatch):
     client = SearxNGClient(base_url='http://searxng:8080', timeout_seconds=3, max_results=3, max_concurrent=2)
     result = await client.search('query')
     assert result['results'] == []
+
+
+@pytest.mark.asyncio
+async def test_search_passes_time_range_and_categories(monkeypatch):
+    payload = {'results': [{'title': 'A', 'url': 'https://a.example', 'content': 'a'}]}
+    fake_client = _FakeClient(response=_FakeResponse(payload))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *args, **kwargs: fake_client)
+
+    client = SearxNGClient(base_url='http://searxng:8080', timeout_seconds=3, max_results=3, max_concurrent=2)
+    await client.search('latest headlines today', time_range='day', categories='news')
+
+    params = fake_client.calls[0]['kwargs']['params']
+    assert params['time_range'] == 'day'
+    assert params['categories'] == 'news'
+
+
+@pytest.mark.asyncio
+async def test_search_normalizes_published_at_fallback_keys(monkeypatch):
+    payload = {
+        'results': [
+            {'title': 'A', 'url': 'https://a.example', 'content': 'a', 'publishedAt': '2026-02-18T10:00:00Z'},
+            {'title': 'B', 'url': 'https://b.example', 'content': 'b', 'date': '2026-02-17'},
+        ]
+    }
+    fake_client = _FakeClient(response=_FakeResponse(payload))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda *args, **kwargs: fake_client)
+
+    client = SearxNGClient(base_url='http://searxng:8080', timeout_seconds=3, max_results=5, max_concurrent=2)
+    result = await client.search('query')
+    assert result['results'][0]['published_at'] == '2026-02-18T10:00:00Z'
+    assert result['results'][1]['published_at'] == '2026-02-17'
 
 
 @pytest.mark.asyncio
