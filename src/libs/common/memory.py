@@ -107,12 +107,18 @@ class Mem0LocalMemoryStore:
                 'Supported: openai, fastembed.'
             )
 
-        llm_config: dict[str, Any] = {
-            'openai_base_url': settings.openai_base_url,
-            'model': settings.mem0_llm_model,
-        }
         if settings.openai_api_key:
-            llm_config['api_key'] = settings.openai_api_key
+            llm_provider = 'openai'
+            llm_config: dict[str, Any] = {
+                'api_key': settings.openai_api_key,
+                'openai_base_url': settings.openai_base_url,
+                'model': settings.mem0_llm_model,
+            }
+        else:
+            # Local fallback to avoid constructing an OpenAI LLM config with an empty API key.
+            # Our remember/recall calls use infer=False and rerank=False in MVP path.
+            llm_provider = 'lmstudio'
+            llm_config = {}
 
         config: dict[str, Any] = {
             'vector_store': {
@@ -125,7 +131,7 @@ class Mem0LocalMemoryStore:
                 },
             },
             'llm': {
-                'provider': 'openai',
+                'provider': llm_provider,
                 'config': llm_config,
             },
             'embedder': {
