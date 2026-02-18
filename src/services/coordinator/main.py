@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import logging
 import re
 from contextlib import asynccontextmanager, suppress
@@ -47,10 +48,6 @@ logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
 SHELL_MUTATION_SCOPE = 'shell_mutation'
-REMOTE_SHELL_TARGET_RE = re.compile(
-    r'^shell@(?P<host>(?:\[[^\]]+\]|[^:\s]+)(?::\d+)?):(?P<command>.+)$',
-    flags=re.IGNORECASE,
-)
 
 
 def _maybe_launch_executor_job(task_id: str) -> None:
@@ -237,22 +234,12 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
 
     if lowered.startswith('shell@'):
         stripped = user_text.strip()
-        shell_target, sep, command = stripped.rpartition(':')
-        if sep and shell_target.lower().startswith('shell@'):
-            remote_host = shell_target[len('shell@') :].strip()
-            command = command.strip()
-            if remote_host and command and all(not ch.isspace() for ch in remote_host):
-                return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
-
-        match = REMOTE_SHELL_TARGET_RE.match(stripped)
-        if match:
-            remote_host = match.group('host').strip()
-            command = match.group('command').strip()
-            if remote_host and command:
-                return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
-            return TaskType.SHELL, {'command': command}
-
-        return TaskType.SHELL, {'command': stripped[len('shell@') :].strip()}
+        shell_target = stripped[len('shell@') :].strip()
+        parsed = _split_remote_shell_target(shell_target)
+        if parsed:
+            remote_host, command = parsed
+            return TaskType.SHELL, {'command': command, 'remote_host': remote_host}
+        return TaskType.SHELL, {'command': shell_target}
 
     if lowered.startswith('skill:'):
         _, _, rest = user_text.partition(':')
@@ -268,6 +255,57 @@ def _parse_task(user_text: str) -> tuple[TaskType | None, dict]:
         return TaskType.FILE, {'instruction': instruction.strip()}
 
     return None, {}
+
+
+def _split_remote_shell_target(shell_target: str) -> tuple[str, str] | None:
+    target = shell_target.strip()
+    if not target:
+        return None
+
+    # Bracketed IPv6 (optionally with :port) has an unambiguous command separator.
+    bracketed = re.match(r'^(?P<host>\[[^\]]+\](?::\d+)?):(?P<command>.+)$', target)
+    if bracketed:
+        host = bracketed.group('host').strip()
+        command = bracketed.group('command').strip()
+        if host and command:
+            return host, command
+
+    first_space = next((index for index, ch in enumerate(target) if ch.isspace()), -1)
+    if first_space > 0:
+        sep = target.rfind(':', 0, first_space)
+        if sep > 0:
+            host = target[:sep].strip()
+            command = target[sep + 1 :].strip()
+            if host and command and all(not ch.isspace() for ch in host):
+                return host, command
+
+    host_port = re.match(r'^(?P<host>[^:\s]+):(?P<port>\d+):(?P<command>.+)$', target)
+    if host_port:
+        host = f"{host_port.group('host')}:{host_port.group('port')}"
+        command = host_port.group('command').strip()
+        if command:
+            return host, command
+
+    # For unbracketed IPv6 hosts, prefer the right-most split whose host parses as IPv6.
+    for index in range(len(target) - 1, -1, -1):
+        if target[index] != ':':
+            continue
+        host = target[:index].strip()
+        command = target[index + 1 :].strip()
+        if not host or not command:
+            continue
+        try:
+            ipaddress.IPv6Address(host)
+            return host, command
+        except ValueError:
+            continue
+
+    host, sep, command = target.partition(':')
+    host = host.strip()
+    command = command.strip()
+    if sep and host and command:
+        return host, command
+    return None
 
 
 async def _handle_start_command(

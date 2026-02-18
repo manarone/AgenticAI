@@ -21,3 +21,10 @@ def test_parse_shell_remote_command_with_colon_not_truncated():
     assert task_type == TaskType.SHELL
     assert payload['remote_host'] == 'example-host'
     assert payload['command'] == 'echo key:value'
+
+
+def test_parse_shell_remote_no_space_colon_command_not_truncated():
+    task_type, payload = _parse_task('shell@example-host:echo:key:value')
+    assert task_type == TaskType.SHELL
+    assert payload['remote_host'] == 'example-host'
+    assert payload['command'] == 'echo:key:value'
