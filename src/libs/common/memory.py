@@ -120,7 +120,14 @@ class Mem0LocalMemoryStore:
                 'model': settings.mem0_llm_model,
             }
         elif llm_provider == 'lmstudio':
-            llm_config = {'model': settings.mem0_llm_model}
+            llm_config = {
+                'model': settings.mem0_llm_model,
+                # lmstudio is OpenAI-compatible; include explicit endpoint config.
+                'base_url': settings.mem0_llm_base_url,
+                'openai_base_url': settings.mem0_llm_base_url,
+            }
+            if settings.openai_api_key:
+                llm_config['api_key'] = settings.openai_api_key
         else:
             raise ValueError(
                 f'Unsupported MEM0_LLM_PROVIDER `{settings.mem0_llm_provider}`. '

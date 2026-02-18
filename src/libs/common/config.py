@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     mem0_embedding_dims: int = Field(default=768, alias='MEM0_EMBEDDING_DIMS')
     mem0_llm_provider: str = Field(default='lmstudio', alias='MEM0_LLM_PROVIDER')
     mem0_llm_model: str = Field(default='minimax/minimax-m2.5', alias='MEM0_LLM_MODEL')
+    mem0_llm_base_url: str = Field(default='http://localhost:1234/v1', alias='MEM0_LLM_BASE_URL')
     mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
     k8s_namespace: str = Field(default='agentai', alias='K8S_NAMESPACE')
