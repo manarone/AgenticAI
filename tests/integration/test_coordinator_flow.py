@@ -310,6 +310,52 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
     assert latest_task.payload.get('grant_id') == active_grant_id
 
 
+def test_invalid_callback_action_is_rejected(monkeypatch):
+    from libs.common.enums import TaskStatus
+    from services.coordinator.main import app, telegram
+
+    sent_messages = []
+    callback_answers = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        callback_answers.append(str(text))
+        return None
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 431}, 'chat': {'id': 431}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: systemctl restart nginx', 'from': {'id': 431}, 'chat': {'id': 431}}},
+        )
+
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        _, _, approval_id = callback_data.partition(':')
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-invalid', 'data': f'noop:{approval_id}', 'from': {'id': 431}}},
+        )
+        assert resp.status_code == 200
+
+    assert 'Invalid action.' in callback_answers
+    latest_task = asyncio.run(_latest_task_for_user(431))
+    assert latest_task is not None
+    assert latest_task.status == TaskStatus.WAITING_APPROVAL
+
+
 def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     from services.coordinator.main import app, telegram
 

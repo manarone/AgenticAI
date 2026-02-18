@@ -728,6 +728,9 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         chat_id = str(callback_query.get('from', {}).get('id', ''))
         actor_tg_id = str(callback_query.get('from', {}).get('id', ''))
         action, _, approval_id = data.partition(':')
+        if action not in {'approve', 'deny'}:
+            await telegram.answer_callback_query(callback_query_id, 'Invalid action.')
+            return {'ok': True}
 
         identity = await repo.get_identity(actor_tg_id)
         approval = await repo.get_approval(approval_id) if approval_id else None

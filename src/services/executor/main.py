@@ -351,17 +351,21 @@ async def _process_task_once(message_id: str, envelope) -> None:
             else:
                 await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
                 await db.commit()
-                await bus.publish_result(
-                    TaskResult(
-                        task_id=envelope.task_id,
-                        tenant_id=envelope.tenant_id,
-                        user_id=envelope.user_id,
-                        success=False,
-                        output='Task failed',
-                        error=str(exc),
-                        created_at=datetime.utcnow(),
+                try:
+                    await bus.publish_result(
+                        TaskResult(
+                            task_id=envelope.task_id,
+                            tenant_id=envelope.tenant_id,
+                            user_id=envelope.user_id,
+                            success=False,
+                            output='Task failed',
+                            error=str(exc),
+                            created_at=datetime.utcnow(),
+                        )
                     )
-                )
+                except Exception:
+                    logger.exception('Failed to publish failure result for task %s after retry exhaustion', task.id)
+                    raise
                 TASK_COUNTER.labels(status='failed').inc()
 
         await db.commit()
