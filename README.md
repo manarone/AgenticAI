@@ -16,7 +16,7 @@ K3s-first AgentAI MVP implementation with:
 - `services.executor.main:app`
 - `services.admin.main:app`
 
-## Local Run (dev)
+## Local Run (Python Processes)
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -45,42 +45,56 @@ The first request downloads the embedding model weights and can take ~30-120s de
 pytest -q
 ```
 
-## Kubernetes
+## Kubernetes (K3s-Only)
+Create and apply secrets:
+```bash
+kubectl -n agentai apply -f kubernetes-stack/base/secret.example.yaml
+```
+
+Deploy dev overlay:
 ```bash
 kubectl apply -k kubernetes-stack/overlays/dev
 ```
 
-## Docker
-Build image:
+Follow logs:
 ```bash
-docker build -t agentai:latest .
+kubectl -n agentai logs -f deploy/coordinator
+kubectl -n agentai logs -f deploy/executor
+kubectl -n agentai logs -f deploy/admin
+kubectl -n agentai logs -f deploy/telegram-poller
 ```
 
-Run coordinator:
+Ingress + local domains (dev):
 ```bash
-docker run --rm -p 8000:8000 --env-file .env agentai:latest
+echo "127.0.0.1 coordinator.agentai.local admin.agentai.local" | sudo tee -a /etc/hosts
+kubectl -n kube-system port-forward svc/traefik 8080:80
+```
+Then use:
+- `http://coordinator.agentai.local:8080/healthz`
+- `http://admin.agentai.local:8080/healthz`
+
+Fallback service access:
+```bash
+kubectl -n agentai port-forward svc/coordinator 8000:8000
+kubectl -n agentai port-forward svc/admin 8002:8002
 ```
 
-Run executor/admin by overriding command:
+Delete dev overlay:
 ```bash
-docker run --rm --env-file .env agentai:latest uvicorn services.executor.main:app --host 0.0.0.0 --port 8001
-docker run --rm --env-file .env agentai:latest uvicorn services.admin.main:app --host 0.0.0.0 --port 8002
+kubectl delete -k kubernetes-stack/overlays/dev --ignore-not-found
 ```
 
-### Docker Compose (recommended local test)
-This stack includes `postgres`, `redis`, `minio`, `qdrant`, `searxng`, `coordinator`, `executor`, `admin`, and a `telegram-poller`.
-The poller uses Telegram `getUpdates` and forwards updates to coordinator, so no public webhook URL is required for local testing.
-
+## Image Build/Push (Podman/Buildah)
 ```bash
-docker compose up --build -d
-docker compose logs -f coordinator executor admin telegram-poller
+bash scripts/build_image.sh
+bash scripts/build_image.sh --tag latest --push
 ```
 
-Stop:
-```bash
-docker compose down
-```
+Set optional env for custom registry/name:
+- `REGISTRY` (default `ghcr.io`)
+- `IMAGE_NAME` (default `$USER/agentai`)
+- `TAG` (default `local`)
 
 ## CI/CD
-- `.github/workflows/ci.yml`: syntax + pytest on push/PR.
-- `.github/workflows/docker.yml`: builds image and pushes to GHCR on `main`/tags.
+- `.github/workflows/ci.yml`: syntax + pytest + kustomize render checks on push/PR.
+- `.github/workflows/image.yml`: Buildah image build and GHCR push on `main`/tags.

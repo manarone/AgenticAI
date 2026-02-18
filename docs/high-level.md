@@ -141,7 +141,7 @@ The executor can operate on real infrastructure the user gives it access to — 
 
 **Capabilities:**
 - SSH into user's servers to diagnose issues, check logs, run commands.
-- Manage services (restart nginx, check Docker containers, tail logs).
+- Manage services (restart nginx, check Kubernetes pods, tail logs).
 - Deploy code, run scripts, manage infrastructure.
 - File operations on remote systems.
 

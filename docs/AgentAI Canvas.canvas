@@ -2,7 +2,7 @@
 	"nodes":[
 		{"id":"f06e70d607af48dd","type":"text","text":"Agent Container \n- Only Websearch enabled, where the agent lives and spends most of its time","x":-160,"y":-280,"width":300,"height":140},
 		{"id":"1cd0ba1c2b11f9e8","type":"text","text":"Application Container(s)\n- Containers managed by the Agent (deployed projects)","x":-265,"y":160,"width":255,"height":137},
-		{"id":"4199d3e026a3d209","type":"text","text":"Coding Container\n- Agent creates applications, individually dockerized, only accessible via tailscale","x":360,"y":-5,"width":260,"height":165}
+		{"id":"4199d3e026a3d209","type":"text","text":"Coding Container\n- Agent creates applications as isolated Kubernetes workloads, only accessible via tailscale","x":360,"y":-5,"width":260,"height":165}
 	],
 	"edges":[
 		{"id":"7629c76909556dd7","fromNode":"f06e70d607af48dd","fromSide":"bottom","toNode":"4199d3e026a3d209","toSide":"top"},

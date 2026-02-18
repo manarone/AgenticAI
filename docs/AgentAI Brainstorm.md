@@ -36,9 +36,9 @@ Your three-tier architecture (Agent → Coding → Application containers) is al
 **Coding Container (the "hands")**
 - Tailscale-only access is smart — zero-trust networking
 - Ephemeral containers: spin up per-task, destroy after. Don't let state accumulate
-- No internet access except through a locked-down allowlist (npm registry, pip, Docker Hub)
+- No internet access except through a locked-down allowlist (npm registry, pip, OCI registries)
 - Resource limits (CPU, memory, disk) to prevent crypto mining or runaway processes
-- The agent should NOT be able to modify its own Dockerfile or container config
+- The agent should NOT be able to modify its own Containerfile or runtime container config
 
 **Application Container(s) (the "output")**
 - Each deployed app gets its own isolated container — good
@@ -64,16 +64,15 @@ You need something to manage these containers. Options:
 
 | Option | Pros | Cons |
 |--------|------|------|
-| Docker Compose | Simple, well-documented, good for single-node | Doesn't scale across machines, no auto-healing |
-| Kubernetes (K3s) | Industry standard, auto-scaling, self-healing | Complex, steep learning curve, overkill for small deployments |
-| Docker Swarm | Middle ground, built into Docker | Less ecosystem support, Docker has deprioritized it |
-| Nomad (HashiCorp) | Simpler than K8s, handles containers + non-containers | Smaller community |
+| Kubernetes (K3s) | Lightweight, self-healing, namespace isolation, production-aligned | More operational complexity than single-process dev |
+| Managed Kubernetes | Reduced ops burden, strong ecosystem | Higher cost, less control |
+| Nomad (HashiCorp) | Simpler than full Kubernetes in some setups | Smaller community/ecosystem |
 
-**Recommendation**: Start with Docker Compose for MVP. Move to K3s (lightweight Kubernetes) when you need multi-node. Your Tailscale networking already solves a lot of what K8s service mesh does.
+**Recommendation**: Start K3s-first for MVP so local/dev/prod are the same deployment model.
 
 ### How the Containers Talk to Each Other
-- Agent Container → Coding Container: Internal API (REST or gRPC) over Docker network. NOT WebSocket (that's how OpenClaw got owned).
-- Coding Container → Application Containers: Docker API to build/deploy. The coding container needs Docker socket access (or use a rootless Docker-in-Docker setup for safety).
+- Agent Container → Coding Container: Internal API (REST or gRPC) over Kubernetes service networking. NOT WebSocket (that's how OpenClaw got owned).
+- Coding Container → Application Containers: Kubernetes API + OCI image builds (Buildah/Podman/Kaniko), no host container socket access.
 - Everything → Management Dashboard: Read-only metrics endpoint. Dashboard can send commands to agent via a separate authenticated channel.
 
 ### Networking (Tailscale)
@@ -130,7 +129,7 @@ This is a significant piece of software on its own. Scope it carefully.
 - Multi-cluster management (for power users running multiple instances)
 
 **Tech for the dashboard:**
-- A simple web app. React or Svelte frontend, API backend that talks to Docker/K8s and your database.
+- A simple web app. React or Svelte frontend, API backend that talks to Kubernetes and your database.
 - Authentication: Tailscale identity (if behind Tailscale) or standard auth (OAuth, passkeys)
 - This could honestly be a separate open-source project that gets people in the door
 
@@ -177,19 +176,19 @@ You said you're a cyber engineer who doesn't know how to code. Here's the honest
 
 **You CAN build this without coding yourself, but you need a strategy:**
 1. **Use AI to write the code.** Claude, Cursor, or similar can generate most of what you need. You'll need to learn enough to review and debug, but not to write from scratch. Your cyber background means you can evaluate security even if you can't write the code.
-2. **Start with existing pieces.** Don't build everything from scratch. Use Docker (pre-built), Tailscale (pre-built), an existing dashboard framework (like Dashy or Portainer for container management), and focus your custom work on the agent logic and skills system.
+2. **Start with existing pieces.** Don't build everything from scratch. Use K3s, Tailscale, and an existing dashboard framework (like Dashy or Portainer for container management), and focus your custom work on the agent logic and skills system.
 3. **Hire or find a co-founder.** If this is a real business, you'll eventually need someone who can code. Your security expertise + their dev skills = strong team.
-4. **Learn just enough.** You don't need to be a software engineer. But you need to understand: Docker/docker-compose (a week of learning), basic Node.js or Python (the agent runtime), YAML/JSON config (you probably already know this), and Git (for managing skills and config).
+4. **Learn just enough.** You don't need to be a software engineer. But you need to understand: Kubernetes/K3s fundamentals, basic Node.js or Python (the agent runtime), YAML/JSON config (you probably already know this), and Git (for managing skills and config).
 
 ### Technical Hiccups You'll Hit
 
-1. **Docker-in-Docker is painful.** Your Coding Container needs to build and deploy other containers. This means it needs Docker socket access, which is a security risk. Look into rootless Docker, Podman, or Kaniko for building images without Docker socket.
+1. **Image builds can be painful.** Your Coding Container needs to build and deploy other containers. Avoid host socket access and use Buildah/Podman/Kaniko patterns for safer image builds.
 
 2. **LLM reliability.** The agent will hallucinate, get stuck in loops, and misinterpret skills. You need: timeout limits per task, loop detection (agent doing the same thing 3+ times), human-in-the-loop for destructive actions, fallback behavior when the LLM fails
 
 3. **State management is hard.** When the agent is mid-task and the container restarts, what happens? You need checkpointing and recovery. OpenClaw struggles with this too.
 
-4. **Multi-tenant isolation.** If you're hosting multiple users, each user's agent/containers must be completely isolated. One user's agent should never be able to see another user's data. This is where Kubernetes namespaces or separate Docker Compose stacks per user come in.
+4. **Multi-tenant isolation.** If you're hosting multiple users, each user's agent/containers must be completely isolated. One user's agent should never be able to see another user's data. Kubernetes namespaces + NetworkPolicies are the right baseline.
 
 5. **Cost control.** An agent in a loop can burn through API credits fast. You need per-user spending limits, per-task token limits, and alerts. OpenClaw users regularly report surprise $50-100 bills from runaway agents.
 
@@ -213,7 +212,7 @@ If you're building this, here's what the minimum viable product looks like:
 ### Phase 1 — Core (Weeks 1-8)
 - [ ] Agent Container running a single LLM (start with Claude, not Kimi — better injection resistance)
 - [ ] 3-5 basic skills (.md format): web search, file management, note-taking, calendar, email summary
-- [ ] Docker Compose setup for the 3-tier architecture
+- [ ] K3s overlay setup for the 3-tier architecture
 - [ ] Tailscale networking between containers
 - [ ] Basic web chat UI (can be very simple)
 - [ ] BYOK for LLM API key
@@ -250,7 +249,6 @@ If you're building this, here's what the minimum viable product looks like:
 
 - OpenClaw security vulnerabilities: Giskard research, CrowdStrike analysis, Dark Reading reporting
 - OpenClaw architecture: DigitalOcean guide, Cyber Strategy Institute
-- Container security: Docker rootless mode docs, Podman as alternative
+- Container security: Podman/Buildah/Kaniko guidance for rootless image workflows
 - Tailscale: ACL docs, Funnel docs for exposing services
 - Skills/plugin security: ClawHub scanning pipeline as a model to improve on
-

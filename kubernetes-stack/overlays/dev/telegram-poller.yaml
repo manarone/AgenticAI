@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-poller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telegram-poller
+  template:
+    metadata:
+      labels:
+        app: telegram-poller
+    spec:
+      containers:
+        - name: telegram-poller
+          image: ghcr.io/example/agentai:v0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "scripts/telegram_polling_bridge.py"]
+          envFrom:
+            - configMapRef:
+                name: agentai-config
+            - secretRef:
+                name: agentai-secrets
+          env:
+            - name: COORDINATOR_WEBHOOK_URL
+              value: http://coordinator:8000/telegram/webhook

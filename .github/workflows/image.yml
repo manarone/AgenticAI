@@ -1,0 +1,76 @@
+name: Image
+
+on:
+  push:
+    branches: ['main']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/agentai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Buildah
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y buildah
+
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          tags=("${REGISTRY}/${IMAGE_NAME}:sha-${short_sha}")
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            tags+=("${REGISTRY}/${IMAGE_NAME}:${GITHUB_REF_NAME}")
+          fi
+
+          if [[ "${GITHUB_REF_NAME}" == "${{ github.event.repository.default_branch }}" ]]; then
+            tags+=("${REGISTRY}/${IMAGE_NAME}:latest")
+          fi
+
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tags <<< "${{ steps.tags.outputs.tags }}"
+          primary="${tags[0]}"
+          buildah bud --isolation chroot -f Containerfile -t "${primary}" .
+          for tag in "${tags[@]:1}"; do
+            buildah tag "${primary}" "${tag}"
+          done
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | buildah login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+
+      - name: Push image tags
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            buildah push "${tag}" "docker://${tag}"
+          done <<< "${{ steps.tags.outputs.tags }}"
