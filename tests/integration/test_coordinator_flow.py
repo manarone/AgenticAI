@@ -514,6 +514,53 @@ def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch)
     assert 'blocked by shell policy during approval' in (task.error or '').lower()
 
 
+def test_shell_grant_not_issued_when_enqueue_after_approval_fails(monkeypatch):
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        return None
+
+    async def fake_publish_task(envelope):
+        raise RuntimeError('task bus unavailable')
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+    monkeypatch.setattr(bus, 'publish_task', fake_publish_task)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 603}, 'chat': {'id': 603}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: systemctl restart nginx', 'from': {'id': 603}, 'chat': {'id': 603}}},
+        )
+
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+
+        resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-grant-fail', 'data': callback_data, 'from': {'id': 603}}},
+        )
+        assert resp.status_code == 200
+
+    task = asyncio.run(_latest_task_for_user(603))
+    assert task is not None
+    assert task.status == TaskStatus.FAILED
+    assert asyncio.run(_has_active_shell_grant(603)) is False
+    assert any('could not be queued after approval' in m['text'].lower() for m in sent_messages)
+
+
 def test_non_command_tool_response_appends_citations(monkeypatch):
     from services.coordinator.main import app, llm, telegram
 

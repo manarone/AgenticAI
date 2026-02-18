@@ -471,6 +471,7 @@ async def lifespan(app: FastAPI):
     app.state.result_task = result_task
     yield
     await web_search_client.aclose()
+    await llm.aclose()
     result_task.cancel()
     with suppress(asyncio.CancelledError):
         await result_task
@@ -971,7 +972,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
-async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> None:
+async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> bool:
     await repo.update_task_status(task.id, TaskStatus.QUEUED)
     await db.commit()
     try:
@@ -997,7 +998,7 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         notify_text=f'Task {task.id[:8]} could not be queued after approval. Please retry.',
     )
     if not published:
-        return
+        return False
     await append_audit(
         db,
         tenant_id=task.tenant_id,
@@ -1007,6 +1008,7 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         details={'task_id': task.id, 'task_type': task.task_type, 'risk_tier': risk_tier.value},
     )
     await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+    return True
 
 
 async def _publish_task_with_recovery(
@@ -1129,8 +1131,8 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                         f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
                     )
                 else:
-                    await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
-                    if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                    queued = await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
+                    if queued and shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
                         try:
                             grant, refreshed = await repo.issue_approval_grant(
                                 tenant_id=task.tenant_id,

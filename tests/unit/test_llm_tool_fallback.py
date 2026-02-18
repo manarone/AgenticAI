@@ -114,3 +114,22 @@ async def test_chat_with_tools_plain_response_without_tool_call(monkeypatch):
     assert result.prompt_tokens == 7
     assert result.completion_tokens == 4
     assert result.tool_records == []
+
+
+@pytest.mark.asyncio
+async def test_llm_client_aclose_resets_shared_http_client(monkeypatch):
+    client = LLMClient()
+    monkeypatch.setattr(client.settings, 'openai_api_key', 'test-key')
+
+    first = await client._get_http_client()
+    second = await client._get_http_client()
+    assert first is second
+    assert first.is_closed is False
+
+    await client.aclose()
+    assert first.is_closed is True
+    assert client._http_client is None
+
+    third = await client._get_http_client()
+    assert third is not first
+    await client.aclose()

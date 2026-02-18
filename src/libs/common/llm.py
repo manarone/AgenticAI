@@ -36,19 +36,33 @@ class LLMClient:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._http_client: httpx.AsyncClient | None = None
-        self._http_client_lock = asyncio.Lock()
+        self._http_client_lock: asyncio.Lock | None = None
+        self._http_client_lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _development_fallback(self, user_prompt: str, memory: list[str] | None) -> tuple[str, int, int]:
         text = f'MVP fallback response. Memory used: {len(memory or [])}. Request: {user_prompt[:120]}'
         return text, 100, 100
 
+    def _get_http_client_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._http_client_lock is None or self._http_client_lock_loop is not loop:
+            self._http_client_lock = asyncio.Lock()
+            self._http_client_lock_loop = loop
+        return self._http_client_lock
+
     async def _get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is not None:
             return self._http_client
-        async with self._http_client_lock:
+        async with self._get_http_client_lock():
             if self._http_client is None:
                 self._http_client = httpx.AsyncClient(timeout=30)
             return self._http_client
+
+    async def aclose(self) -> None:
+        if self._http_client is None:
+            return
+        await self._http_client.aclose()
+        self._http_client = None
 
     async def _post_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
