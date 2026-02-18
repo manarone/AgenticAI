@@ -18,7 +18,6 @@ from libs.common.audit import append_audit
 from libs.common.config import get_settings
 from libs.common.db import AsyncSessionLocal, engine as db_engine, get_db
 from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
-from libs.common.k8s import ExecutorJobLauncher
 from libs.common.llm import LLMClient, ToolExecutionRecord
 from libs.common.memory import get_memory_backend
 from libs.common.metrics import (
@@ -51,7 +50,6 @@ telegram = TelegramClient()
 memory = get_memory_backend()
 llm = LLMClient()
 bus = get_task_bus()
-job_launcher = ExecutorJobLauncher()
 logger = logging.getLogger(__name__)
 runtime_system_prompt = load_runtime_prompt()
 web_search_client = SearxNGClient(
@@ -74,17 +72,6 @@ DEEP_SEARCH_HINTS = (
     'comprehensive',
     'thorough',
 )
-
-
-def _maybe_launch_executor_job(task_id: str) -> None:
-    if not settings.launch_executor_job:
-        return
-    try:
-        job_launcher.create_job(task_id)
-    except Exception:
-        # Executor deployment mode still processes stream messages, so do not fail request path.
-        logger.exception('Failed to launch executor job for task %s', task_id)
-        return
 
 
 def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> list[str]:
@@ -1041,7 +1028,6 @@ async def _publish_task_with_recovery(
         await _send_telegram_message(chat_id, notify_text)
         return False
 
-    _maybe_launch_executor_job(task.id)
     return True
 
 

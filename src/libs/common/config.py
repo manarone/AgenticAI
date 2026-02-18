@@ -50,10 +50,6 @@ class Settings(BaseSettings):
     mem0_llm_base_url: str = Field(default='http://localhost:1234/v1', alias='MEM0_LLM_BASE_URL')
     mem0_history_db_path: str = Field(default='./data/mem0-history.db', alias='MEM0_HISTORY_DB_PATH')
 
-    k8s_namespace: str = Field(default='agentai', alias='K8S_NAMESPACE')
-    k8s_executor_image: str = Field(default='agentai-executor:v0.1.0', alias='K8S_EXECUTOR_IMAGE')
-    launch_executor_job: bool = Field(default=False, alias='LAUNCH_EXECUTOR_JOB')
-
     max_executor_retries: int = Field(default=2, alias='MAX_EXECUTOR_RETRIES')
     task_timeout_seconds: int = Field(default=120, alias='TASK_TIMEOUT_SECONDS')
     shell_policy_mode: str = Field(default='balanced', alias='SHELL_POLICY_MODE')

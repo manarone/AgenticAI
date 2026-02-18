@@ -163,7 +163,7 @@ AgentAI enters a market with massive TAM but extreme competition, significant tr
 | **Gap** | **Problem** | **AgentAI Response** |
 |---|---|---|
 | **Multi-tenancy risks** | SaaS platforms share infrastructure; one tenant's agent can potentially access another's data | Per-user K3s namespaces with network policies (hard isolation) |
-| **Container escape vectors** | Standard Docker containers share host kernel; exploitable by agent code injection | K3s + gVisor/MicroVM hybrid for executor isolation |
+| **Container escape vectors** | Standard shared-kernel containers can be exploited by agent code injection | K3s + gVisor/MicroVM hybrid for executor isolation |
 | **Credential storage** | Platforms store API keys centrally; breach = mass key compromise | BYOK model; keys stay in user's namespace, never centralized |
 | **Prompt injection** | Attackers embed instructions in external data sources; agents execute them | Sandboxing + MCP server validation + audit logging |
 | **Lateral movement** | Once agent has credentials, can pivot to other systems without control | Least-privilege service accounts, granular RBAC via Kubernetes |
@@ -277,14 +277,14 @@ AgentAI enters a market with massive TAM but extreme competition, significant tr
 
 ### 5.3 Container Isolation Evolution
 
-**The trend**: From Docker (shared kernel) → Kata/gVisor (sandboxed) → MicroVMs (hard isolation).
+**The trend**: From shared-kernel containers → Kata/gVisor (sandboxed) → MicroVMs (hard isolation).
 
 **Why**: AI-generated code = untrusted code. Shared kernel = exploitable.
 
 **Industry Solutions**:
 - **MicroVMs** (Firecracker): Dedicated kernel per workload, slowest setup (~100ms), strongest isolation
 - **gVisor** (AppArmor+seccomp): Syscall interception, ~25x slower but sufficient for most
-- **Hardened Docker**: Only for trusted code
+- **Hardened shared-kernel runtimes**: Only for trusted code
 
 **AgentAI Advantage**: K3s executor pods can use gVisor RuntimeClass by default (strong isolation, reasonable performance).
 

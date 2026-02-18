@@ -18,7 +18,8 @@
 - Confirm stream names in config map and env are identical.
 
 ### 2) Telegram commands ignored
-- Confirm webhook points to coordinator.
+- In dev: confirm `telegram-poller` pod is running and forwarding updates.
+- In prod: confirm webhook points to coordinator.
 - Validate bot token secret.
 - Check `/start <invite_code>` was completed.
 

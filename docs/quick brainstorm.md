@@ -7,7 +7,7 @@ I think to start telegram is a good spot, can have one bot, and multiple users c
 
 Agent container needs to be abel to run a model on coding container, basically it orchastrates what its doing, then needs to connect to application to actually manage them. also we might need to expand it to a spot where it can do stuff in a terminal, maybe coding container can be that spot but need to rework names.
 
-mem0 is a good memory soltuion from what i've seen, probably with postgres. so i can handle multiple writes to it. probably should also be independant per user. this entire ecosystem should probably be seperated per user, so a seperate "kube setup" or docker stack per user. needs to be abel to spin up and down containers, maybe pods might be a better fit, for eg.
+mem0 is a good memory soltuion from what i've seen, probably with postgres. so i can handle multiple writes to it. probably should also be independant per user. this entire ecosystem should probably be seperated per user, so a seperate kube namespace/stack per user. needs to be abel to spin up and down containers, maybe pods might be a better fit, for eg.
 
 application website - only thing that needs to be accessible via the tailnet
 
@@ -29,7 +29,7 @@ input sanitization is a must
 
 secrets management yes - users will probably wanna link a lot of accounts like gmail, outlook, calenders, basically anything openclaw does, but ened to devise a secure way to work on that too
 
-docker compose maybe but k3s mgiht be the better bet because need to planf or the scaling
+k3s is probably the better bet because need to plan for scaling from day one
 
 conversation history is important, and also making sure convos arent just overblown into context making it useless
 
