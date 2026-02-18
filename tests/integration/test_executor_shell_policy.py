@@ -162,3 +162,22 @@ async def test_executor_allows_mutating_shell_with_queue_time_grant_proof_after_
         updated = await repo.get_task(task.id)
         assert updated is not None
         assert updated.attempts == 1
+
+
+async def test_executor_rejects_empty_shell_command():
+    from services.executor.main import _process_task_once, bus
+
+    task, envelope = await _create_shell_task('')
+    await _process_task_once('1-0', envelope)
+
+    results = await bus.read_results(consumer_name='test-empty-shell', count=10, block_ms=10)
+    assert results
+    _, result = results[-1]
+    assert result.success is False
+    assert 'empty shell command' in (result.error or '').lower()
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.status == TaskStatus.FAILED

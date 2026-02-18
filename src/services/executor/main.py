@@ -112,6 +112,8 @@ async def _run_remote_shell(remote_host: str, command: str) -> str:
 
 async def _run_shell(repo: CoreRepository, task, envelope) -> str:
     command = str(task.payload.get('command', '')).strip()
+    if not command:
+        raise NonRetriableExecutionError('Empty shell command.')
     remote_host = str(task.payload.get('remote_host', '')).strip() or None
     shell_policy = classify_shell_command(
         command,
@@ -292,6 +294,12 @@ async def _process_task_once(message_id: str, envelope) -> None:
 
         if can_transition(task.status, TaskStatus.DISPATCHING):
             await repo.update_task_status(task.id, TaskStatus.DISPATCHING)
+            await db.commit()
+            refreshed = await repo.get_task(task.id)
+            if refreshed is None:
+                await bus.ack_task(message_id)
+                return
+            task = refreshed
 
         if task.status != TaskStatus.RUNNING and not can_transition(task.status, TaskStatus.RUNNING):
             await bus.ack_task(message_id)

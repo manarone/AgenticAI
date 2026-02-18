@@ -483,6 +483,19 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
 
             if task_type == TaskType.SHELL:
                 command = payload.get('command', '').strip()
+                if not command:
+                    SHELL_POLICY_BLOCK_COUNTER.inc()
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='execution_blocked_by_policy',
+                        details={'task_type': 'shell', 'reason': 'empty_command', 'command_hash': ''},
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, 'Shell command is empty. Provide a command after `shell:`.')
+                    return
                 command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
                 shell_policy = classify_shell_command(
                     command,
