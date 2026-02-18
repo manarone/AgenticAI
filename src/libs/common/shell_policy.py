@@ -207,6 +207,9 @@ def _mutating_reason(command: str) -> str | None:
     if not normalized:
         return 'empty_command'
 
+    if _tokens(command) is None:
+        return 'shell_parse_error'
+
     if _COMMAND_SUBSTITUTION_PATTERN.search(command):
         return 'shell_command_substitution'
 
@@ -253,8 +256,7 @@ def _has_output_redirection(command: str) -> bool:
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        # Treat parse errors conservatively.
-        return True
+        return False
 
     return any(token in {'>', '>>'} for token in tokens)
 

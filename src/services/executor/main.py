@@ -18,9 +18,6 @@ from libs.common.enums import TaskStatus, TaskType
 from libs.common.metrics import (
     REQUEST_COUNTER,
     SHELL_DENIED_NO_GRANT_COUNTER,
-    SHELL_POLICY_ALLOW_COUNTER,
-    SHELL_POLICY_APPROVAL_COUNTER,
-    SHELL_POLICY_BLOCK_COUNTER,
     TASK_COUNTER,
     metrics_response,
 )
@@ -122,16 +119,6 @@ async def _run_shell(repo: CoreRepository, task, envelope) -> str:
         allow_hard_block_override=settings.shell_allow_hard_block_override,
     )
     command_hash = _command_hash(command)
-
-    # Avoid double-counting policy decisions that were already classified in coordinator.
-    should_track_executor_policy_metrics = 'policy_decision' not in task.payload
-    if should_track_executor_policy_metrics:
-        if shell_policy.decision == ShellPolicyDecision.ALLOW_AUTORUN:
-            SHELL_POLICY_ALLOW_COUNTER.inc()
-        elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
-            SHELL_POLICY_APPROVAL_COUNTER.inc()
-        else:
-            SHELL_POLICY_BLOCK_COUNTER.inc()
 
     await append_audit(
         repo.db,

@@ -624,7 +624,6 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
             await bus.publish_cancel(task.id)
             await _send_telegram_message(chat_id, f'Task {task.id[:8]} denied and canceled.')
         else:
-            should_enqueue_task = True
             if task.task_type == TaskType.SHELL.value:
                 command = str(task.payload.get('command', '')).strip()
                 command_hash = hashlib.sha256(command.encode('utf-8')).hexdigest()[:16] if command else ''
@@ -658,28 +657,47 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                         chat_id,
                         f'Task {task.id[:8]} blocked by safety policy ({shell_policy.reason}).',
                     )
-                elif shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
-                    grant, refreshed = await repo.issue_approval_grant(
-                        tenant_id=task.tenant_id,
-                        user_id=task.user_id,
-                        scope=SHELL_MUTATION_SCOPE,
-                        ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
-                    )
-                    await append_audit(
-                        db,
-                        tenant_id=task.tenant_id,
-                        user_id=task.user_id,
-                        actor='coordinator',
-                        action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
-                        details={
-                            'scope': SHELL_MUTATION_SCOPE,
-                            'grant_id': grant.id,
-                            'expires_at': grant.expires_at.isoformat(),
-                            'command_hash': command_hash,
-                        },
-                    )
+                else:
+                    if shell_policy.decision == ShellPolicyDecision.REQUIRE_APPROVAL:
+                        grant, refreshed = await repo.issue_approval_grant(
+                            tenant_id=task.tenant_id,
+                            user_id=task.user_id,
+                            scope=SHELL_MUTATION_SCOPE,
+                            ttl_minutes=settings.shell_mutation_grant_ttl_minutes,
+                        )
+                        await append_audit(
+                            db,
+                            tenant_id=task.tenant_id,
+                            user_id=task.user_id,
+                            actor='coordinator',
+                            action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
+                            details={
+                                'scope': SHELL_MUTATION_SCOPE,
+                                'grant_id': grant.id,
+                                'expires_at': grant.expires_at.isoformat(),
+                                'command_hash': command_hash,
+                            },
+                        )
 
-            if should_enqueue_task:
+                    await repo.update_task_status(task.id, TaskStatus.QUEUED)
+                    try:
+                        risk_tier = RiskTier(task.risk_tier)
+                    except ValueError:
+                        risk_tier = classify_risk(str(task.payload))
+                    envelope = TaskEnvelope(
+                        task_id=UUID(task.id),
+                        tenant_id=UUID(task.tenant_id),
+                        user_id=UUID(task.user_id),
+                        task_type=TaskType(task.task_type),
+                        payload=task.payload,
+                        risk_tier=risk_tier,
+                        approval_id=UUID(approval.id),
+                        created_at=datetime.utcnow(),
+                    )
+                    await bus.publish_task(envelope)
+                    _maybe_launch_executor_job(task.id)
+                    await _send_telegram_message(chat_id, f'Task {task.id[:8]} approved and queued.')
+            else:
                 await repo.update_task_status(task.id, TaskStatus.QUEUED)
                 try:
                     risk_tier = RiskTier(task.risk_tier)
