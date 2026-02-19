@@ -18,8 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" \
-    && npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
-    && mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
+    && npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium
 
 COPY pyproject.toml README.md ./
 COPY src ./src

@@ -125,6 +125,7 @@ def _extract_artifact_paths(data: Any) -> list[str]:
 
 
 def _run_browser_command(command: list[str]) -> tuple[int, bytes, bytes, bool]:
+    # May raise FileNotFoundError when settings.agent_browser_bin is unavailable.
     try:
         completed = subprocess.run(
             command,

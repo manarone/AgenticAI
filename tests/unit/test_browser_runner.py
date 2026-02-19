@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -7,6 +8,18 @@ from libs.common import browser_runner
 
 def _fake_exec_result(returncode: int, stdout: str = '', stderr: str = '', timed_out: bool = False):
     return returncode, stdout.encode('utf-8'), stderr.encode('utf-8'), timed_out
+
+
+def test_run_browser_command_timeout_branch(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd='agent-browser', timeout=1, output=b'partial-out', stderr=b'partial-err')
+
+    monkeypatch.setattr(browser_runner.subprocess, 'run', fake_run)
+    returncode, out, err, timed_out = browser_runner._run_browser_command(['agent-browser', 'snapshot', '--json'])
+    assert returncode == -1
+    assert timed_out is True
+    assert out == b'partial-out'
+    assert err == b'partial-err'
 
 
 @pytest.mark.asyncio
