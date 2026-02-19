@@ -120,15 +120,13 @@ async def _send_browser_artifacts(chat_id: str, action: str, artifacts: list[dic
 
         caption = f'{caption_prefix}: {path.name}'
         suffix = path.suffix.lower()
-        try:
-            if suffix in {'.png', '.jpg', '.jpeg', '.webp'}:
-                await telegram.send_photo(chat_id=chat_id, photo_path=str(path), caption=caption)
-            else:
-                await telegram.send_document(chat_id=chat_id, document_path=str(path), caption=caption)
-            sent += 1
-        finally:
-            with suppress(OSError):
-                path.unlink()
+        if suffix in {'.png', '.jpg', '.jpeg', '.webp'}:
+            await telegram.send_photo(chat_id=chat_id, photo_path=str(path), caption=caption)
+        else:
+            await telegram.send_document(chat_id=chat_id, document_path=str(path), caption=caption)
+        sent += 1
+        with suppress(OSError):
+            path.unlink()
     return sent
 
 
@@ -506,6 +504,9 @@ async def _run_single_task_if_set() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.browser_enabled and not settings.executor_internal_token.strip():
+        logger.warning('BROWSER_ENABLED=true but EXECUTOR_INTERNAL_TOKEN is empty; internal browser RPC will reject requests.')
+
     async with AsyncSessionLocal() as db:
         async with db_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

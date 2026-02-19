@@ -55,6 +55,7 @@ def _browser_handler_with_action(browser_handler: ToolHandler, action: str) -> T
 
 
 def _register_browser_tools(registry: ToolRegistry, browser_handler: ToolHandler) -> None:
+    # Intentionally does not expose browser_run/eval to the LLM tool surface in MVP.
     browser_tools = [
         (
             'browser_open',

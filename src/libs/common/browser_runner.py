@@ -79,15 +79,15 @@ def _build_action_argv(action: str, args: dict[str, Any]) -> list[str]:
     if normalized == 'type':
         selector = _selector_from_args(args)
         text = _as_non_empty(args.get('text'))
-        if not selector or text is None:
-            raise ValueError('browser_type requires `selector`/`ref` and `text`.')
+        if not selector or text is None or not text:
+            raise ValueError('browser_type requires `selector`/`ref` and non-empty `text`.')
         return ['type', selector, text]
 
     if normalized == 'fill':
         selector = _selector_from_args(args)
         text = _as_non_empty(args.get('text'))
-        if not selector or text is None:
-            raise ValueError('browser_fill requires `selector`/`ref` and `text`.')
+        if not selector or text is None or not text:
+            raise ValueError('browser_fill requires `selector`/`ref` and non-empty `text`.')
         return ['fill', selector, text]
 
     if normalized == 'run':
@@ -175,7 +175,7 @@ async def run_browser_action(
         }
 
     try:
-        parsed = json.loads(clipped_stdout) if clipped_stdout else {}
+        parsed = json.loads(stdout_text) if stdout_text else {}
     except json.JSONDecodeError:
         return {
             'ok': False,

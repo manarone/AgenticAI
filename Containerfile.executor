@@ -4,6 +4,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+ARG AGENT_BROWSER_VERSION=0.11.1
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g agent-browser && agent-browser install --with-deps
+RUN npm install -g "agent-browser@${AGENT_BROWSER_VERSION}" && agent-browser install --with-deps
 
 COPY pyproject.toml README.md ./
 COPY src ./src

@@ -527,9 +527,16 @@ def _build_tool_registry(
 def _browser_approval_message(task_id: str, payload: dict) -> str:
     action = normalize_browser_action(str(payload.get('action', '')))
     action_label = action or 'browser action'
+    args = payload.get('args') if isinstance(payload.get('args'), dict) else {}
+    target = ''
+    if action == 'open':
+        target = str(args.get('url', '')).strip()
+    elif action in {'click', 'type', 'fill', 'get_text', 'wait_for'}:
+        target = str(args.get('selector') or args.get('ref') or '').strip()
+    target_line = f'\nTarget: `{target.replace("`", "")[:200]}`' if target else ''
     return (
         f'Task {task_id[:8]} needs approval before running this browser action:\n'
-        f'`{action_label}`\n'
+        f'`{action_label}`{target_line}\n'
         'Approve?'
     )
 

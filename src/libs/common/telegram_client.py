@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 
 import httpx
@@ -70,8 +71,9 @@ class TelegramClient:
         data: dict[str, str | int] = {'chat_id': chat_id}
         if caption:
             data['caption'] = caption
+        mime_type = mimetypes.guess_type(path.name)[0] or 'image/png'
         with path.open('rb') as handle:
-            files = {'photo': (path.name, handle, 'image/png')}
+            files = {'photo': (path.name, handle, mime_type)}
             await self._post_multipart('sendPhoto', data=data, files=files)
 
     async def send_document(self, chat_id: str | int, document_path: str, caption: str | None = None) -> None:

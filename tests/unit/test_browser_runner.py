@@ -85,3 +85,10 @@ async def test_browser_runner_collects_screenshot_artifact(monkeypatch, tmp_path
     result = await browser_runner.run_browser_action('screenshot', {})
     assert result['ok'] is True
     assert result['artifacts'] == [{'path': str(shot)}]
+
+
+@pytest.mark.asyncio
+async def test_browser_runner_rejects_empty_fill_text():
+    result = await browser_runner.run_browser_action('fill', {'selector': '#email', 'text': '   '})
+    assert result['ok'] is False
+    assert 'non-empty `text`' in result['error']
