@@ -5,13 +5,18 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, status
+from pydantic import BaseModel, Field
 
 from libs.common.audit import append_audit
+from libs.common.browser_policy import BrowserActionClass, classify_browser_action, normalize_browser_action
+from libs.common.browser_runner import run_browser_action
 from libs.common.config import get_settings
 from libs.common.db import AsyncSessionLocal, engine as db_engine
 from libs.common.enums import TaskStatus, TaskType
@@ -28,19 +33,33 @@ from libs.common.schemas import TaskResult
 from libs.common.skill_store import SkillStore
 from libs.common.state_machine import can_transition
 from libs.common.task_bus import get_task_bus
+from libs.common.telegram_client import TelegramClient
 
 settings = get_settings()
 bus = get_task_bus()
 skill_store = SkillStore()
+telegram = TelegramClient()
 WORK_DIR = Path(settings.shell_work_dir).expanduser()
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 SHELL_MUTATION_SCOPE = 'shell_mutation'
+BROWSER_MUTATION_SCOPE = 'browser_mutation'
 logger = logging.getLogger(__name__)
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 
 
 class NonRetriableExecutionError(RuntimeError):
     """Raised for policy/configuration denials that retries cannot recover from."""
+
+
+class BrowserActionRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    conversation_id: str | None = None
+    chat_id: str | None = None
+    action: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = None
+    task_id: str | None = None
 
 
 def _command_hash(command: str) -> str:
@@ -62,6 +81,118 @@ def _validate_remote_host(remote_host: str) -> None:
         raise NonRetriableExecutionError('Missing remote host.')
     if remote_host.startswith('-') or not _REMOTE_HOST_RE.fullmatch(remote_host):
         raise NonRetriableExecutionError('Invalid remote host.')
+
+
+def _validate_internal_auth(authorization: str | None) -> None:
+    expected = settings.executor_internal_token.strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Internal executor token is not configured.',
+        )
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Missing bearer token.')
+    provided = authorization[len('Bearer ') :].strip()
+    if not secrets.compare_digest(expected, provided):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Invalid executor token.')
+
+
+def _browser_summary(action: str, result: dict[str, Any]) -> str:
+    summary = str(result.get('summary', '')).strip()
+    if summary:
+        return summary
+    return f'Browser action `{normalize_browser_action(action)}` completed.'
+
+
+async def _send_browser_artifacts(chat_id: str, action: str, artifacts: list[dict[str, Any]], *, task_id: str | None) -> int:
+    sent = 0
+    caption_prefix = f'Browser {normalize_browser_action(action)}'
+    if task_id:
+        caption_prefix += f' (task {task_id[:8]})'
+
+    for artifact in artifacts:
+        path_text = str(artifact.get('path', '')).strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser().resolve()
+        if not path.exists():
+            continue
+
+        caption = f'{caption_prefix}: {path.name}'
+        suffix = path.suffix.lower()
+        try:
+            if suffix in {'.png', '.jpg', '.jpeg', '.webp'}:
+                await telegram.send_photo(chat_id=chat_id, photo_path=str(path), caption=caption)
+            else:
+                await telegram.send_document(chat_id=chat_id, document_path=str(path), caption=caption)
+            sent += 1
+        finally:
+            with suppress(OSError):
+                path.unlink()
+    return sent
+
+
+async def _run_browser(
+    repo: CoreRepository,
+    task,
+    envelope,
+) -> str:
+    action = normalize_browser_action(str(task.payload.get('action', '')).strip())
+    args = task.payload.get('args') if isinstance(task.payload.get('args'), dict) else {}
+    session_id = str(task.payload.get('session_id', '')).strip() or None
+    chat_id = str(task.payload.get('chat_id', '')).strip() or None
+    action_class = classify_browser_action(action)
+
+    if action_class == BrowserActionClass.UNSUPPORTED:
+        raise NonRetriableExecutionError(f'Unsupported browser action: {action}')
+
+    if action_class == BrowserActionClass.MUTATING:
+        if not settings.browser_mutation_enabled:
+            raise NonRetriableExecutionError('Mutating browser actions are disabled by policy.')
+        has_grant = await repo.has_active_approval_grant(task.tenant_id, task.user_id, scope=BROWSER_MUTATION_SCOPE)
+        has_direct_approval = envelope.approval_id is not None
+        if not has_grant and not has_direct_approval:
+            raise NonRetriableExecutionError('Browser action requires approval.')
+
+    await append_audit(
+        repo.db,
+        tenant_id=task.tenant_id,
+        user_id=task.user_id,
+        actor='executor',
+        action='browser_action_started',
+        details={'task_id': task.id, 'action': action, 'session_id': session_id},
+    )
+
+    result = await run_browser_action(action=action, args=args, session_id=session_id)
+    if not result.get('ok', False):
+        error = str(result.get('error', '')).strip() or 'Browser action failed.'
+        await append_audit(
+            repo.db,
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            actor='executor',
+            action='browser_action_failed',
+            details={'task_id': task.id, 'action': action, 'error': error},
+        )
+        raise RuntimeError(error)
+
+    sent = 0
+    artifacts = result.get('artifacts')
+    if chat_id and isinstance(artifacts, list):
+        sent = await _send_browser_artifacts(chat_id, action, artifacts, task_id=task.id)
+
+    summary = _browser_summary(action, result)
+    if sent:
+        summary = f'{summary}\nSent {sent} browser artifact(s) to Telegram.'
+    await append_audit(
+        repo.db,
+        tenant_id=task.tenant_id,
+        user_id=task.user_id,
+        actor='executor',
+        action='browser_action_completed',
+        details={'task_id': task.id, 'action': action, 'artifacts_sent': sent},
+    )
+    return summary
 
 
 async def _run_local_shell(command: str) -> str:
@@ -258,6 +389,10 @@ async def _execute_task(task, envelope, repo: CoreRepository) -> str:
             skill_name=task.payload.get('skill_name', '').strip(),
             skill_input=task.payload.get('input', '').strip(),
         )
+    if task_type == TaskType.BROWSER:
+        if not settings.browser_enabled:
+            raise NonRetriableExecutionError('Browser automation is disabled by configuration.')
+        return await _run_browser(repo, task, envelope)
     if task_type == TaskType.WEB:
         raise NonRetriableExecutionError('Web tasks are handled inline by coordinator and should not reach executor.')
     raise NonRetriableExecutionError(f'Unsupported task type: {task_type.value}')
@@ -401,6 +536,69 @@ async def healthz() -> dict:
 @app.get('/metrics')
 async def metrics():
     return metrics_response()
+
+
+@app.post('/internal/browser/action')
+async def internal_browser_action(
+    request: BrowserActionRequest,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    REQUEST_COUNTER.labels(service='executor', endpoint='internal_browser_action').inc()
+    _validate_internal_auth(authorization)
+
+    if not settings.browser_enabled:
+        return {
+            'ok': False,
+            'error': 'browser_disabled',
+            'user_notice': 'Browser automation is disabled by configuration.',
+        }
+
+    action = normalize_browser_action(request.action)
+    action_class = classify_browser_action(action)
+    if action_class == BrowserActionClass.UNSUPPORTED:
+        return {'ok': False, 'error': f'Unsupported browser action: {action}'}
+    if action_class == BrowserActionClass.MUTATING:
+        return {
+            'ok': False,
+            'error': 'mutating_browser_actions_must_be_queued',
+            'user_notice': 'Mutating browser actions must be queued for approval.',
+        }
+
+    async with AsyncSessionLocal() as db:
+        await append_audit(
+            db,
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            actor='coordinator',
+            action='browser_sync_invoked',
+            details={'action': action, 'session_id': request.session_id},
+        )
+        await db.commit()
+
+    result = await run_browser_action(action=action, args=request.args, session_id=request.session_id)
+    if not result.get('ok', False):
+        notice = str(result.get('error', '')).strip() or 'Browser action failed.'
+        return {'ok': False, 'error': notice, 'user_notice': notice}
+
+    sent = 0
+    artifacts = result.get('artifacts')
+    if request.chat_id and isinstance(artifacts, list):
+        sent = await _send_browser_artifacts(
+            chat_id=request.chat_id,
+            action=action,
+            artifacts=artifacts,
+            task_id=request.task_id,
+        )
+
+    summary = _browser_summary(action, result)
+    if sent:
+        summary = f'{summary}\nSent {sent} browser artifact(s) to Telegram.'
+    return {
+        **result,
+        'summary': summary,
+        'artifacts_sent': sent,
+        'mode': 'sync',
+    }
 
 
 @app.get('/')

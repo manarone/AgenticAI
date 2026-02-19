@@ -9,13 +9,15 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from time import perf_counter
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from libs.common.audit import append_audit
+from libs.common.browser_policy import BrowserActionClass, classify_browser_action, normalize_browser_action
 from libs.common.config import get_settings
 from libs.common.db import AsyncSessionLocal, engine as db_engine, get_db
 from libs.common.enums import ApprovalDecision, RiskTier, TaskStatus, TaskType
@@ -42,7 +44,7 @@ from libs.common.sanitizer import sanitize_input
 from libs.common.state_machine import can_transition
 from libs.common.task_bus import get_task_bus
 from libs.common.telegram_client import TelegramClient
-from libs.common.tool_registry import ToolRegistry, build_default_tool_registry
+from libs.common.tool_registry import ToolRegistry, build_tool_registry
 from libs.common.web_search import SearxNGClient, WebSearchUnavailableError
 from libs.common.repositories import CoreRepository
 
@@ -63,6 +65,7 @@ web_search_client = SearxNGClient(
 
 MAX_TELEGRAM_MESSAGE_LEN = 3900
 SHELL_MUTATION_SCOPE = 'shell_mutation'
+BROWSER_MUTATION_SCOPE = 'browser_mutation'
 _REMOTE_HOST_RE = re.compile(r'^[A-Za-z0-9._:\-\[\]]+$')
 DEEP_SEARCH_HINTS = (
     'deep research',
@@ -377,6 +380,22 @@ def _collect_web_failure_notice(tool_records: list[ToolExecutionRecord]) -> str 
     return None
 
 
+def _collect_browser_failure_notice(tool_records: list[ToolExecutionRecord]) -> str | None:
+    for record in tool_records:
+        if not record.name.startswith('browser_'):
+            continue
+        payload = record.result if isinstance(record.result, dict) else {}
+        if payload.get('ok', False):
+            continue
+        notice = str(payload.get('user_notice', '')).strip()
+        if notice:
+            return notice
+        error = str(payload.get('error', '')).strip()
+        if error:
+            return error
+    return None
+
+
 async def _execute_web_search(
     *,
     db: AsyncSession,
@@ -493,8 +512,73 @@ async def _execute_web_search(
     return {'ok': True, 'time_sensitive': time_sensitive, **result}
 
 
-def _build_web_search_registry(web_handler: Callable[[dict], Awaitable[dict]]) -> ToolRegistry:
-    return build_default_tool_registry(web_handler, web_search_enabled=settings.web_search_enabled)
+def _build_tool_registry(
+    web_handler: Callable[[dict], Awaitable[dict]],
+    browser_handler: Callable[[dict], Awaitable[dict]],
+) -> ToolRegistry:
+    return build_tool_registry(
+        web_search_handler=web_handler,
+        web_search_enabled=settings.web_search_enabled,
+        browser_handler=browser_handler,
+        browser_enabled=settings.browser_enabled,
+    )
+
+
+def _browser_approval_message(task_id: str, payload: dict) -> str:
+    action = normalize_browser_action(str(payload.get('action', '')))
+    action_label = action or 'browser action'
+    return (
+        f'Task {task_id[:8]} needs approval before running this browser action:\n'
+        f'`{action_label}`\n'
+        'Approve?'
+    )
+
+
+def _new_browser_session_id() -> str:
+    return f'tg-{uuid4().hex[:12]}'
+
+
+async def _invoke_executor_browser_action(
+    *,
+    tenant_id: str,
+    user_id: str,
+    conversation_id: str,
+    chat_id: str,
+    action: str,
+    args: dict,
+    session_id: str,
+) -> dict:
+    endpoint = f"{settings.executor_base_url.rstrip('/')}/internal/browser/action"
+    headers: dict[str, str] = {}
+    token = settings.executor_internal_token.strip()
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+
+    payload = {
+        'tenant_id': tenant_id,
+        'user_id': user_id,
+        'conversation_id': conversation_id,
+        'chat_id': chat_id,
+        'action': action,
+        'args': args,
+        'session_id': session_id,
+    }
+    timeout = max(5, settings.browser_timeout_seconds + 5)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(endpoint, json=payload, headers=headers)
+        response.raise_for_status()
+        body = response.json()
+        if isinstance(body, dict):
+            return body
+        return {'ok': False, 'error': 'executor_invalid_response', 'user_notice': 'Browser executor returned invalid data.'}
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.exception('Executor browser sync call failed action=%s', action)
+        return {
+            'ok': False,
+            'error': str(exc),
+            'user_notice': 'Browser action is unavailable right now.',
+        }
 
 
 def _source_date_label(item: dict) -> str:
@@ -855,17 +939,23 @@ async def _handle_new_command(repo: CoreRepository, db: AsyncSession, identity, 
 async def _handle_cancel_command(repo: CoreRepository, db: AsyncSession, identity, chat_id: str, text: str) -> None:
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[1].strip().lower() in {'grant', 'grants'}:
-        revoked = await repo.revoke_approval_grants(identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE)
+        revoked_shell = await repo.revoke_approval_grants(identity.tenant_id, identity.user_id, scope=SHELL_MUTATION_SCOPE)
+        revoked_browser = await repo.revoke_approval_grants(
+            identity.tenant_id,
+            identity.user_id,
+            scope=BROWSER_MUTATION_SCOPE,
+        )
+        revoked = revoked_shell + revoked_browser
         await append_audit(
             db,
             tenant_id=identity.tenant_id,
             user_id=identity.user_id,
             actor='user',
             action='approval_grant_revoked',
-            details={'scope': SHELL_MUTATION_SCOPE, 'count': revoked},
+            details={'scope': 'all_mutation_scopes', 'count': revoked},
         )
         await db.commit()
-        await _send_telegram_message(chat_id, f'Revoked {revoked} shell approval grant(s).')
+        await _send_telegram_message(chat_id, f'Revoked {revoked} mutation approval grant(s).')
         return
 
     if len(parts) == 1 or parts[1].strip().lower() == 'all':
@@ -1013,6 +1103,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
 
             if task_type is None:
                 context_blocks = await _build_context_blocks(repo, db, identity, convo.id, sanitized)
+                browser_session_id = _new_browser_session_id()
 
                 async def _web_tool_handler(args: dict) -> dict:
                     if not settings.web_search_enabled:
@@ -1048,7 +1139,135 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         time_sensitive=time_sensitive,
                     )
 
-                registry = _build_web_search_registry(_web_tool_handler)
+                async def _browser_tool_handler(args: dict) -> dict:
+                    if not settings.browser_enabled:
+                        return {
+                            'ok': False,
+                            'error': 'browser_disabled',
+                            'user_notice': 'Browser automation is disabled by configuration.',
+                        }
+
+                    action = normalize_browser_action(str(args.get('action', '')))
+                    action_class = classify_browser_action(action)
+                    if action_class == BrowserActionClass.UNSUPPORTED:
+                        return {'ok': False, 'error': f'Unsupported browser action: {action}'}
+
+                    browser_args = dict(args)
+                    browser_args.pop('action', None)
+
+                    if action_class == BrowserActionClass.READ_ONLY:
+                        return await _invoke_executor_browser_action(
+                            tenant_id=identity.tenant_id,
+                            user_id=identity.user_id,
+                            conversation_id=convo.id,
+                            chat_id=chat_id,
+                            action=action,
+                            args=browser_args,
+                            session_id=browser_session_id,
+                        )
+
+                    if not settings.browser_mutation_enabled:
+                        return {
+                            'ok': False,
+                            'error': 'browser_mutation_disabled',
+                            'user_notice': 'Mutating browser actions are disabled by configuration.',
+                        }
+
+                    has_grant = await repo.has_active_approval_grant(
+                        identity.tenant_id,
+                        identity.user_id,
+                        scope=BROWSER_MUTATION_SCOPE,
+                    )
+                    status = TaskStatus.QUEUED if has_grant else TaskStatus.WAITING_APPROVAL
+                    browser_payload = {
+                        'action': action,
+                        'args': browser_args,
+                        'session_id': browser_session_id,
+                        'chat_id': chat_id,
+                        'source': 'tool_call',
+                    }
+                    task = await repo.create_task(
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        conversation_id=convo.id,
+                        task_type=TaskType.BROWSER.value,
+                        risk_tier=RiskTier.L3.value,
+                        payload=browser_payload,
+                        status=status,
+                    )
+
+                    approval_id: str | None = None
+                    if status == TaskStatus.WAITING_APPROVAL:
+                        approval = await repo.create_approval(task.id, identity.tenant_id, identity.user_id)
+                        approval_id = approval.id
+                        buttons = {
+                            'inline_keyboard': [
+                                [
+                                    {'text': 'Approve', 'callback_data': f'approve:{approval.id}'},
+                                    {'text': 'Deny', 'callback_data': f'deny:{approval.id}'},
+                                ]
+                            ]
+                        }
+                        await _send_telegram_message(
+                            chat_id,
+                            _browser_approval_message(task.id, browser_payload),
+                            reply_markup=buttons,
+                            parse_mode='Markdown',
+                        )
+                        await db.commit()
+                        return {
+                            'ok': True,
+                            'queued': True,
+                            'approval_required': True,
+                            'task_id': task.id,
+                            'approval_id': approval_id,
+                            'action': action,
+                            'session_id': browser_session_id,
+                        }
+
+                    envelope = TaskEnvelope(
+                        task_id=UUID(task.id),
+                        tenant_id=UUID(identity.tenant_id),
+                        user_id=UUID(identity.user_id),
+                        task_type=TaskType.BROWSER,
+                        payload=browser_payload,
+                        risk_tier=RiskTier.L3,
+                        approval_id=UUID(approval_id) if approval_id else None,
+                        created_at=datetime.utcnow(),
+                    )
+                    published = await _publish_task_with_recovery(
+                        repo,
+                        db,
+                        task,
+                        envelope,
+                        chat_id,
+                        notify_text=f'Task {task.id[:8]} could not be queued. Please retry.',
+                    )
+                    if not published:
+                        return {
+                            'ok': False,
+                            'error': 'browser_task_queue_failed',
+                            'user_notice': 'Could not queue browser task. Please retry.',
+                        }
+                    await append_audit(
+                        db,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        actor='coordinator',
+                        action='task_enqueued',
+                        details={'task_id': task.id, 'task_type': TaskType.BROWSER.value, 'risk_tier': RiskTier.L3.value},
+                    )
+                    await db.commit()
+                    return {
+                        'ok': True,
+                        'queued': True,
+                        'approval_required': False,
+                        'task_id': task.id,
+                        'action': action,
+                        'session_id': browser_session_id,
+                    }
+
+                registry = _build_tool_registry(_web_tool_handler, _browser_tool_handler)
                 llm_result = await llm.chat_with_tools(
                     system_prompt=_render_runtime_system_prompt(),
                     user_prompt=sanitized,
@@ -1063,6 +1282,9 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 notice = _collect_web_failure_notice(llm_result.tool_records)
                 if notice:
                     response = f'{notice}\n\n{response}'.strip()
+                browser_notice = _collect_browser_failure_notice(llm_result.tool_records)
+                if browser_notice:
+                    response = f'{browser_notice}\n\n{response}'.strip()
 
                 await repo.add_message(identity.tenant_id, identity.user_id, convo.id, 'assistant', response)
                 await repo.increment_token_usage(
@@ -1402,6 +1624,62 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                         except Exception as exc:
                             grant_issue_error = str(exc)
                             logger.exception('Failed to issue shell approval grant for task_id=%s', task.id)
+            elif task.task_type == TaskType.BROWSER.value:
+                action_name = normalize_browser_action(str(task.payload.get('action', '')).strip())
+                action_class = classify_browser_action(action_name)
+                if not settings.browser_enabled:
+                    callback_text = 'Browser automation disabled'
+                    await repo.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error='Browser automation is disabled by configuration',
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed: browser automation is disabled.')
+                elif action_class == BrowserActionClass.UNSUPPORTED:
+                    callback_text = 'Unsupported browser action'
+                    await repo.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error=f'Unsupported browser action during approval: {action_name}',
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed: unsupported browser action.')
+                elif action_class == BrowserActionClass.MUTATING and not settings.browser_mutation_enabled:
+                    callback_text = 'Browser mutations disabled'
+                    await repo.update_task_status(
+                        task.id,
+                        TaskStatus.FAILED,
+                        error='Mutating browser actions are disabled by configuration',
+                    )
+                    await db.commit()
+                    await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed: browser mutations are disabled.')
+                else:
+                    queued = await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
+                    if queued and action_class == BrowserActionClass.MUTATING:
+                        try:
+                            grant, refreshed = await repo.issue_approval_grant(
+                                tenant_id=task.tenant_id,
+                                user_id=task.user_id,
+                                scope=BROWSER_MUTATION_SCOPE,
+                                ttl_minutes=settings.browser_mutation_grant_ttl_minutes,
+                            )
+                            await append_audit(
+                                db,
+                                tenant_id=task.tenant_id,
+                                user_id=task.user_id,
+                                actor='coordinator',
+                                action='approval_grant_refreshed' if refreshed else 'approval_grant_issued',
+                                details={
+                                    'scope': BROWSER_MUTATION_SCOPE,
+                                    'grant_id': grant.id,
+                                    'expires_at': grant.expires_at.isoformat(),
+                                    'action': action_name,
+                                },
+                            )
+                        except Exception as exc:
+                            grant_issue_error = str(exc)
+                            logger.exception('Failed to issue browser approval grant for task_id=%s', task.id)
             else:
                 await _queue_task_after_approval(repo, db, task, approval.id, chat_id)
 

@@ -30,3 +30,4 @@ class TaskType(str, Enum):
     SHELL = 'shell'
     FILE = 'file'
     WEB = 'web'
+    BROWSER = 'browser'

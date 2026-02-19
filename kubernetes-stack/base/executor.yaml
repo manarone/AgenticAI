@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: executor
-          image: ghcr.io/manarj789/agentai:v0.1.0
+          image: ghcr.io/manarj789/agentai-executor:v0.1.0
           command: ["uvicorn", "services.executor.main:app", "--host", "0.0.0.0", "--port", "8001"]
           ports:
             - containerPort: 8001
