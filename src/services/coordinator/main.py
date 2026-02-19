@@ -1240,7 +1240,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                         payload=browser_payload,
                         risk_tier=RiskTier.L3,
                         approval_id=UUID(approval_id) if approval_id else None,
-                        created_at=datetime.utcnow(),
+                        created_at=datetime.now(timezone.utc),
                     )
                     published = await _publish_task_with_recovery(
                         repo,
@@ -1423,7 +1423,7 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
                 payload=payload,
                 risk_tier=risk,
                 approval_id=UUID(approval_id) if approval_id else None,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             )
             published = await _publish_task_with_recovery(
                 repo,
@@ -1463,7 +1463,7 @@ async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, tas
         payload=task.payload,
         risk_tier=risk_tier,
         approval_id=UUID(approval_id),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     published = await _publish_task_with_recovery(
         repo,

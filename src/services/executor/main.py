@@ -120,13 +120,16 @@ async def _send_browser_artifacts(chat_id: str, action: str, artifacts: list[dic
 
         caption = f'{caption_prefix}: {path.name}'
         suffix = path.suffix.lower()
-        if suffix in {'.png', '.jpg', '.jpeg', '.webp'}:
-            await telegram.send_photo(chat_id=chat_id, photo_path=str(path), caption=caption)
-        else:
-            await telegram.send_document(chat_id=chat_id, document_path=str(path), caption=caption)
-        sent += 1
-        with suppress(OSError):
-            path.unlink()
+        try:
+            if suffix in {'.png', '.jpg', '.jpeg', '.webp'}:
+                await telegram.send_photo(chat_id=chat_id, photo_path=str(path), caption=caption)
+            else:
+                await telegram.send_document(chat_id=chat_id, document_path=str(path), caption=caption)
+            sent += 1
+            with suppress(OSError):
+                path.unlink()
+        except Exception:
+            logger.exception('Failed to send browser artifact %s; file retained on disk.', path)
     return sent
 
 
