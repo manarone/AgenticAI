@@ -33,6 +33,15 @@ async def _has_active_shell_grant(telegram_user_id: int) -> bool:
         return await repo.has_active_approval_grant(identity.tenant_id, identity.user_id, 'shell_mutation')
 
 
+async def _has_active_browser_grant(telegram_user_id: int) -> bool:
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        identity = await repo.get_identity(str(telegram_user_id))
+        if identity is None:
+            return False
+        return await repo.has_active_approval_grant(identity.tenant_id, identity.user_id, 'browser_mutation')
+
+
 async def _latest_task_for_user(telegram_user_id: int):
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)
@@ -1019,6 +1028,156 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
 
     assert seen_tools and seen_tools[0] == []
     assert any('no tools used' in m['text'].lower() for m in sent_messages)
+
+
+def test_browser_read_only_tool_executes_inline(monkeypatch):
+    from services.coordinator.main import app, llm, settings, telegram
+
+    sent_messages = []
+    seen_actions = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_browser_sync(*, tenant_id, user_id, conversation_id, chat_id, action, args, session_id):
+        seen_actions.append({'action': action, 'args': args, 'session_id': session_id})
+        return {'ok': True, 'action': action, 'summary': 'Opened page'}
+
+    async def fake_chat_with_tools(**kwargs):
+        result = await kwargs['tool_executor']('browser_open', {'url': 'https://example.com'})
+        assert result['ok'] is True
+        return LLMToolChatResult(
+            text='Browser done.',
+            prompt_tokens=2,
+            completion_tokens=2,
+            tool_records=[ToolExecutionRecord(name='browser_open', args={'url': 'https://example.com'}, result=result)],
+        )
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+    monkeypatch.setattr(settings, 'browser_enabled', True)
+    monkeypatch.setattr('services.coordinator.main._invoke_executor_browser_action', fake_browser_sync)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1401}, 'chat': {'id': 1401}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'please open docs', 'from': {'id': 1401}, 'chat': {'id': 1401}}},
+        )
+        assert resp.status_code == 200
+
+    assert seen_actions and seen_actions[0]['action'] == 'open'
+    assert any('browser done' in message['text'].lower() for message in sent_messages)
+
+
+def test_browser_mutation_tool_queues_and_grants_on_approve(monkeypatch):
+    from services.coordinator.main import app, llm, settings, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        result = await kwargs['tool_executor']('browser_click', {'selector': '#submit'})
+        assert result.get('queued') is True
+        return LLMToolChatResult(
+            text='Queued browser click.',
+            prompt_tokens=1,
+            completion_tokens=1,
+            tool_records=[ToolExecutionRecord(name='browser_click', args={'selector': '#submit'}, result=result)],
+        )
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+    monkeypatch.setattr(settings, 'browser_enabled', True)
+    monkeypatch.setattr(settings, 'browser_mutation_enabled', True)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1402}, 'chat': {'id': 1402}}},
+        )
+        resp = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'click submit', 'from': {'id': 1402}, 'chat': {'id': 1402}}},
+        )
+        assert resp.status_code == 200
+
+        approval_msgs = [message for message in sent_messages if message['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        callback_resp = client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-browser-approve', 'data': callback_data, 'from': {'id': 1402}}},
+        )
+        assert callback_resp.status_code == 200
+
+    latest = asyncio.run(_latest_task_for_user(1402))
+    assert latest is not None
+    assert latest.task_type == 'browser'
+    assert latest.status == TaskStatus.QUEUED
+    assert asyncio.run(_has_active_browser_grant(1402)) is True
+
+
+def test_browser_mutation_tool_reuses_active_grant(monkeypatch):
+    from services.coordinator.main import app, llm, settings, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        result = await kwargs['tool_executor']('browser_fill', {'selector': '#email', 'text': 'a@b.com'})
+        return LLMToolChatResult(
+            text='Browser fill processed.',
+            prompt_tokens=1,
+            completion_tokens=1,
+            tool_records=[ToolExecutionRecord(name='browser_fill', args={'selector': '#email'}, result=result)],
+        )
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+    monkeypatch.setattr(settings, 'browser_enabled', True)
+    monkeypatch.setattr(settings, 'browser_mutation_enabled', True)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1403}, 'chat': {'id': 1403}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'fill first', 'from': {'id': 1403}, 'chat': {'id': 1403}}},
+        )
+        first_approval = [message for message in sent_messages if message['reply_markup']]
+        assert first_approval
+        callback_data = first_approval[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        client.post(
+            '/telegram/webhook',
+            json={'callback_query': {'id': 'cb-browser-approve-2', 'data': callback_data, 'from': {'id': 1403}}},
+        )
+        assert asyncio.run(_has_active_browser_grant(1403)) is True
+
+        sent_messages.clear()
+        second = client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'fill second', 'from': {'id': 1403}, 'chat': {'id': 1403}}},
+        )
+        assert second.status_code == 200
+
+    assert not any(message['reply_markup'] for message in sent_messages)
+    latest = asyncio.run(_latest_task_for_user(1403))
+    assert latest is not None
+    assert latest.task_type == 'browser'
+    assert latest.status == TaskStatus.QUEUED
 
 
 def test_invalid_remote_shell_syntax_is_rejected(monkeypatch):

@@ -3,6 +3,7 @@ set -euo pipefail
 
 REGISTRY="${REGISTRY:-ghcr.io}"
 IMAGE_NAME="${IMAGE_NAME:-${USER}/agentai}"
+EXECUTOR_IMAGE_NAME="${EXECUTOR_IMAGE_NAME:-${USER}/agentai-executor}"
 TAG="${TAG:-local}"
 PUSH=false
 
@@ -24,19 +25,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 IMAGE_REF="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+EXECUTOR_IMAGE_REF="${REGISTRY}/${EXECUTOR_IMAGE_NAME}:${TAG}"
 
 if command -v podman >/dev/null 2>&1; then
   podman build -f Containerfile -t "${IMAGE_REF}" .
+  podman build -f Containerfile.executor -t "${EXECUTOR_IMAGE_REF}" .
   if [[ "${PUSH}" == "true" ]]; then
     podman push "${IMAGE_REF}"
+    podman push "${EXECUTOR_IMAGE_REF}"
   fi
   exit 0
 fi
 
 if command -v buildah >/dev/null 2>&1; then
   buildah bud --isolation chroot -f Containerfile -t "${IMAGE_REF}" .
+  buildah bud --isolation chroot -f Containerfile.executor -t "${EXECUTOR_IMAGE_REF}" .
   if [[ "${PUSH}" == "true" ]]; then
     buildah push "${IMAGE_REF}"
+    buildah push "${EXECUTOR_IMAGE_REF}"
   fi
   exit 0
 fi

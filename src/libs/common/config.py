@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     web_search_deep_results: int = Field(default=10, alias='WEB_SEARCH_DEEP_RESULTS')
     web_search_max_results: int = Field(default=10, alias='WEB_SEARCH_MAX_RESULTS')
     web_search_max_concurrent: int = Field(default=8, alias='WEB_SEARCH_MAX_CONCURRENT')
+    browser_enabled: bool = Field(default=False, alias='BROWSER_ENABLED')
+    browser_mutation_enabled: bool = Field(default=True, alias='BROWSER_MUTATION_ENABLED')
+    agent_browser_bin: str = Field(default='agent-browser', alias='AGENT_BROWSER_BIN')
+    browser_timeout_seconds: int = Field(default=60, alias='BROWSER_TIMEOUT_SECONDS')
+    browser_max_output_chars: int = Field(default=12000, alias='BROWSER_MAX_OUTPUT_CHARS')
+    browser_mutation_grant_ttl_minutes: int = Field(default=10, alias='BROWSER_MUTATION_GRANT_TTL_MINUTES')
+    executor_base_url: str = Field(default='http://executor:8001', alias='EXECUTOR_BASE_URL')
+    executor_internal_token: str = Field(default='', alias='EXECUTOR_INTERNAL_TOKEN')
 
     @field_validator('shell_policy_mode')
     @classmethod

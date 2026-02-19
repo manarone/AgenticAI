@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
+
 import httpx
 
 from libs.common.config import get_settings
@@ -16,13 +19,22 @@ class TelegramClient:
     def _base_url(self) -> str:
         return f'https://api.telegram.org/bot{self.settings.telegram_bot_token}'
 
-    async def _post(self, method: str, payload: dict) -> None:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(f'{self._base_url()}/{method}', json=payload)
+    @staticmethod
+    def _validate_telegram_response(method: str, response: httpx.Response) -> None:
         response.raise_for_status()
         data = response.json()
         if isinstance(data, dict) and not data.get('ok', False):
             raise RuntimeError(f'Telegram {method} failed: {data}')
+
+    async def _post(self, method: str, payload: dict) -> None:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(f'{self._base_url()}/{method}', json=payload)
+        self._validate_telegram_response(method, response)
+
+    async def _post_multipart(self, method: str, data: dict, files: dict) -> None:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(f'{self._base_url()}/{method}', data=data, files=files)
+        self._validate_telegram_response(method, response)
 
     async def send_message(
         self,
@@ -51,3 +63,26 @@ class TelegramClient:
             return
         payload = {'chat_id': chat_id, 'action': action}
         await self._post('sendChatAction', payload)
+
+    async def send_photo(self, chat_id: str | int, photo_path: str, caption: str | None = None) -> None:
+        if not self.enabled:
+            return
+        path = Path(photo_path).expanduser().resolve()
+        data: dict[str, str | int] = {'chat_id': chat_id}
+        if caption:
+            data['caption'] = caption
+        mime_type = mimetypes.guess_type(path.name)[0] or 'image/png'
+        with path.open('rb') as handle:
+            files = {'photo': (path.name, handle, mime_type)}
+            await self._post_multipart('sendPhoto', data=data, files=files)
+
+    async def send_document(self, chat_id: str | int, document_path: str, caption: str | None = None) -> None:
+        if not self.enabled:
+            return
+        path = Path(document_path).expanduser().resolve()
+        data: dict[str, str | int] = {'chat_id': chat_id}
+        if caption:
+            data['caption'] = caption
+        with path.open('rb') as handle:
+            files = {'document': (path.name, handle, 'application/octet-stream')}
+            await self._post_multipart('sendDocument', data=data, files=files)
