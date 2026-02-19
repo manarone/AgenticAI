@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +124,22 @@ def _extract_artifact_paths(data: Any) -> list[str]:
     return deduped
 
 
+def _run_browser_command(command: list[str]) -> tuple[int, bytes, bytes, bool]:
+    # May raise FileNotFoundError when settings.agent_browser_bin is unavailable.
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=settings.browser_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return -1, exc.stdout or b'', exc.stderr or b'', True
+
+    return completed.returncode, completed.stdout or b'', completed.stderr or b'', False
+
+
 async def run_browser_action(
     action: str,
     args: dict[str, Any] | None = None,
@@ -143,17 +159,17 @@ async def run_browser_action(
     command.extend(action_argv)
     command.append('--json')
 
-    proc = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=settings.browser_timeout_seconds)
-    except TimeoutError:
-        proc.kill()
-        with suppress(asyncio.CancelledError, ProcessLookupError):
-            await proc.communicate()
+        returncode, out, err, timed_out = await asyncio.to_thread(_run_browser_command, command)
+    except FileNotFoundError:
+        return {
+            'ok': False,
+            'action': normalized,
+            'error': f'browser binary not found: {settings.agent_browser_bin}',
+            'session_id': session_id,
+        }
+
+    if timed_out:
         return {
             'ok': False,
             'action': normalized,
@@ -166,11 +182,11 @@ async def run_browser_action(
     clipped_stderr = stderr_text[: settings.browser_max_output_chars]
     clipped_stdout = stdout_text[: settings.browser_max_output_chars]
 
-    if proc.returncode != 0:
+    if returncode != 0:
         return {
             'ok': False,
             'action': normalized,
-            'error': clipped_stderr or f'agent-browser exited with code {proc.returncode}',
+            'error': clipped_stderr or f'agent-browser exited with code {returncode}',
             'session_id': session_id,
         }
 

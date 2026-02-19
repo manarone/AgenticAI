@@ -1,32 +1,35 @@
-import asyncio
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from libs.common import browser_runner
 
 
-class _FakeProcess:
-    def __init__(self, *, returncode: int, stdout: str = '', stderr: str = '') -> None:
-        self.returncode = returncode
-        self._stdout = stdout.encode('utf-8')
-        self._stderr = stderr.encode('utf-8')
-        self.killed = False
+def _fake_exec_result(returncode: int, stdout: str = '', stderr: str = '', timed_out: bool = False):
+    return returncode, stdout.encode('utf-8'), stderr.encode('utf-8'), timed_out
 
-    async def communicate(self):
-        return self._stdout, self._stderr
 
-    def kill(self):
-        self.killed = True
+def test_run_browser_command_timeout_branch(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd='agent-browser', timeout=1, output=b'partial-out', stderr=b'partial-err')
+
+    monkeypatch.setattr(browser_runner.subprocess, 'run', fake_run)
+    returncode, out, err, timed_out = browser_runner._run_browser_command(['agent-browser', 'snapshot', '--json'])
+    assert returncode == -1
+    assert timed_out is True
+    assert out == b'partial-out'
+    assert err == b'partial-err'
 
 
 @pytest.mark.asyncio
 async def test_browser_runner_success(monkeypatch):
-    async def fake_exec(*args, **kwargs):
-        return _FakeProcess(returncode=0, stdout='{"text":"ok"}')
-
     monkeypatch.setattr(browser_runner.settings, 'agent_browser_bin', 'agent-browser')
-    monkeypatch.setattr(browser_runner.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(
+        browser_runner,
+        '_run_browser_command',
+        lambda _command: _fake_exec_result(0, '{"text":"ok"}'),
+    )
 
     result = await browser_runner.run_browser_action('open', {'url': 'https://example.com'}, session_id='abc')
     assert result['ok'] is True
@@ -36,10 +39,11 @@ async def test_browser_runner_success(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_runner_invalid_json(monkeypatch):
-    async def fake_exec(*args, **kwargs):
-        return _FakeProcess(returncode=0, stdout='not-json')
-
-    monkeypatch.setattr(browser_runner.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(
+        browser_runner,
+        '_run_browser_command',
+        lambda _command: _fake_exec_result(0, 'not-json'),
+    )
     result = await browser_runner.run_browser_action('snapshot', {})
     assert result['ok'] is False
     assert 'non-JSON' in result['error']
@@ -47,10 +51,11 @@ async def test_browser_runner_invalid_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_runner_non_zero_exit(monkeypatch):
-    async def fake_exec(*args, **kwargs):
-        return _FakeProcess(returncode=1, stderr='failed')
-
-    monkeypatch.setattr(browser_runner.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(
+        browser_runner,
+        '_run_browser_command',
+        lambda _command: _fake_exec_result(1, '', 'failed'),
+    )
     result = await browser_runner.run_browser_action('close', {})
     assert result['ok'] is False
     assert result['error'] == 'failed'
@@ -58,19 +63,26 @@ async def test_browser_runner_non_zero_exit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_browser_runner_timeout(monkeypatch):
-    class _SlowProcess(_FakeProcess):
-        async def communicate(self):  # pragma: no cover - covered by timeout path
-            await asyncio.sleep(2)
-            return await super().communicate()
-
-    async def fake_exec(*args, **kwargs):
-        return _SlowProcess(returncode=0, stdout='{}')
-
-    monkeypatch.setattr(browser_runner.settings, 'browser_timeout_seconds', 1)
-    monkeypatch.setattr(browser_runner.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(
+        browser_runner,
+        '_run_browser_command',
+        lambda _command: _fake_exec_result(0, '{}', '', timed_out=True),
+    )
     result = await browser_runner.run_browser_action('snapshot', {})
     assert result['ok'] is False
     assert 'timed out' in result['error']
+
+
+@pytest.mark.asyncio
+async def test_browser_runner_binary_missing(monkeypatch):
+    def raise_missing(_command):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(browser_runner, '_run_browser_command', raise_missing)
+    monkeypatch.setattr(browser_runner.settings, 'agent_browser_bin', 'missing-browser-bin')
+    result = await browser_runner.run_browser_action('snapshot', {})
+    assert result['ok'] is False
+    assert 'not found' in result['error']
 
 
 @pytest.mark.asyncio
@@ -78,10 +90,11 @@ async def test_browser_runner_collects_screenshot_artifact(monkeypatch, tmp_path
     shot = tmp_path / 'shot.png'
     shot.write_bytes(b'png')
 
-    async def fake_exec(*args, **kwargs):
-        return _FakeProcess(returncode=0, stdout='{"path":"' + str(shot) + '"}')
-
-    monkeypatch.setattr(browser_runner.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(
+        browser_runner,
+        '_run_browser_command',
+        lambda _command: _fake_exec_result(0, '{"path":"' + str(shot) + '"}'),
+    )
     result = await browser_runner.run_browser_action('screenshot', {})
     assert result['ok'] is True
     assert result['artifacts'] == [{'path': str(shot)}]
