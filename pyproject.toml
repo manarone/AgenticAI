@@ -35,6 +35,7 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+addopts = "--strict-markers"
 markers = [
   "mvp_smoke: Fast end-to-end MVP smoke coverage used in PR CI",
   "safety_critical: Safety and regression-critical tests that must gate PRs",
