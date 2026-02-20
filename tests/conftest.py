@@ -14,6 +14,43 @@ os.environ['OPENAI_MODEL'] = 'openrouter/kimi-k2.5'
 os.environ['MAX_EXECUTOR_RETRIES'] = '1'
 
 
+_MVP_SMOKE_PATH_KEYWORDS = (
+    'tests/integration/test_coordinator_flow.py',
+    'tests/integration/test_executor_retries.py',
+)
+_SAFETY_CRITICAL_PATH_KEYWORDS = (
+    'test_shell_policy.py',
+    'test_executor_shell_policy.py',
+    'test_approval_grants.py',
+    'test_sanitizer.py',
+    'test_coordinator_flow.py',
+    'test_executor_retries.py',
+    'test_state_machine.py',
+)
+_BETA_BLOCKING_PATH_KEYWORDS = (
+    'tests/integration/',
+    'test_memory_backend_config.py',
+    'test_context_compaction.py',
+    'test_invite_codes.py',
+    'test_approval_grants.py',
+    'test_shell_policy.py',
+    'test_executor_shell_policy.py',
+)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        nodeid = item.nodeid
+        path_only = nodeid.split('::', 1)[0]
+
+        if any(keyword in path_only for keyword in _MVP_SMOKE_PATH_KEYWORDS):
+            item.add_marker(pytest.mark.mvp_smoke)
+        if any(keyword in path_only for keyword in _SAFETY_CRITICAL_PATH_KEYWORDS):
+            item.add_marker(pytest.mark.safety_critical)
+        if any(keyword in path_only for keyword in _BETA_BLOCKING_PATH_KEYWORDS):
+            item.add_marker(pytest.mark.beta_blocking)
+
+
 @pytest.fixture(autouse=True)
 async def reset_state():
     from libs.common.config import get_settings
