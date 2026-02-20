@@ -15,15 +15,6 @@ from libs.common.schemas import TaskResult
 from libs.common.web_search import WebSearchUnavailableError
 
 
-async def _prepare_invite_code() -> str:
-    async with AsyncSessionLocal() as db:
-        repo = CoreRepository(db)
-        tenant, _, _ = await repo.get_or_create_default_tenant_user()
-        invite = await repo.create_invite_code(tenant_id=tenant.id, ttl_hours=24)
-        await db.commit()
-        return invite.code
-
-
 async def _has_active_shell_grant(telegram_user_id: int) -> bool:
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)
@@ -40,16 +31,6 @@ async def _has_active_browser_grant(telegram_user_id: int) -> bool:
         if identity is None:
             return False
         return await repo.has_active_approval_grant(identity.tenant_id, identity.user_id, 'browser_mutation')
-
-
-async def _latest_task_for_user(telegram_user_id: int):
-    async with AsyncSessionLocal() as db:
-        repo = CoreRepository(db)
-        identity = await repo.get_identity(str(telegram_user_id))
-        if identity is None:
-            return None
-        tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id, limit=1)
-        return tasks[0] if tasks else None
 
 
 async def _create_task_for_user(telegram_user_id: int, *, status: TaskStatus, payload: dict):
@@ -85,7 +66,7 @@ async def _conversation_ids_for_user(telegram_user_id: int) -> list[str]:
         return [row[0] for row in result.all()]
 
 
-def test_start_and_direct_response(monkeypatch):
+def test_start_and_direct_response(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -95,7 +76,7 @@ def test_start_and_direct_response(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         start_payload = {
@@ -122,7 +103,7 @@ def test_start_and_direct_response(monkeypatch):
     assert any('mvp fallback response' in m['text'].lower() for m in sent_messages)
 
 
-def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
+def test_duplicate_telegram_update_id_is_ignored(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, telegram, telegram_update_deduper
 
     sent_messages = []
@@ -139,7 +120,7 @@ def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     asyncio.run(telegram_update_deduper.clear())
 
     with TestClient(app) as client:
@@ -166,7 +147,7 @@ def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
     assert sum(1 for m in sent_messages if m['text'] == 'single response') == 1
 
 
-def test_new_command_starts_new_conversation(monkeypatch):
+def test_new_command_starts_new_conversation(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -176,7 +157,7 @@ def test_new_command_starts_new_conversation(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -203,7 +184,7 @@ def test_new_command_starts_new_conversation(monkeypatch):
     assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
-def test_clear_command_alias_starts_new_conversation(monkeypatch):
+def test_clear_command_alias_starts_new_conversation(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -213,7 +194,7 @@ def test_clear_command_alias_starts_new_conversation(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -240,7 +221,7 @@ def test_clear_command_alias_starts_new_conversation(monkeypatch):
     assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
-def test_news_command_does_not_reset_conversation(monkeypatch):
+def test_news_command_does_not_reset_conversation(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -250,7 +231,7 @@ def test_news_command_does_not_reset_conversation(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -269,7 +250,7 @@ def test_news_command_does_not_reset_conversation(monkeypatch):
     assert not any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
-def test_new_command_with_botname_suffix_starts_new_conversation(monkeypatch):
+def test_new_command_with_botname_suffix_starts_new_conversation(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -279,7 +260,7 @@ def test_new_command_with_botname_suffix_starts_new_conversation(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -306,7 +287,7 @@ def test_new_command_with_botname_suffix_starts_new_conversation(monkeypatch):
     assert any('started a new conversation' in m['text'].lower() for m in sent_messages)
 
 
-def test_destructive_flow_waits_for_approval(monkeypatch):
+def test_destructive_flow_waits_for_approval(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -316,7 +297,7 @@ def test_destructive_flow_waits_for_approval(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -336,7 +317,7 @@ def test_destructive_flow_waits_for_approval(monkeypatch):
     assert 'delete /tmp/a' in approval_msgs[0]['text'].lower()
 
 
-def test_blocked_shell_command_is_rejected(monkeypatch):
+def test_blocked_shell_command_is_rejected(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -346,7 +327,7 @@ def test_blocked_shell_command_is_rejected(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -363,7 +344,7 @@ def test_blocked_shell_command_is_rejected(monkeypatch):
     assert not any(m['reply_markup'] for m in sent_messages if 'blocked' in m['text'].lower())
 
 
-def test_shell_session_grant_skips_reapproval(monkeypatch):
+def test_shell_session_grant_skips_reapproval(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -377,7 +358,7 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -408,7 +389,7 @@ def test_shell_session_grant_skips_reapproval(monkeypatch):
     assert any('approved and queued' in m['text'].lower() for m in sent_messages)
 
 
-def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch):
+def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, bus, telegram
 
     sent_messages = []
@@ -422,7 +403,7 @@ def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(bus, 'publish_task', fake_publish_task)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.post(
@@ -435,14 +416,14 @@ def test_publish_task_failure_marks_task_failed_and_notifies(monkeypatch):
         )
         assert resp.status_code == 200
 
-    task = asyncio.run(_latest_task_for_user(421))
+    task = asyncio.run(latest_task_for_user(421))
     assert task is not None
     assert task.status == TaskStatus.FAILED
     assert 'failed to enqueue task' in (task.error or '').lower()
     assert any('could not be queued' in m['text'].lower() for m in sent_messages)
 
 
-def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
+def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -458,7 +439,7 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -496,7 +477,7 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     assert any('already processed' in text.lower() for text in callback_answers)
 
 
-def test_duplicate_callback_update_id_is_ignored(monkeypatch):
+def test_duplicate_callback_update_id_is_ignored(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram, telegram_update_deduper
 
     sent_messages = []
@@ -512,7 +493,7 @@ def test_duplicate_callback_update_id_is_ignored(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     asyncio.run(telegram_update_deduper.clear())
 
     with TestClient(app) as client:
@@ -543,7 +524,7 @@ def test_duplicate_callback_update_id_is_ignored(monkeypatch):
     assert len(callback_answers) == 1
 
 
-def test_result_consumer_notifies_when_executor_already_set_terminal_status(monkeypatch):
+def test_result_consumer_notifies_when_executor_already_set_terminal_status(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, bus, telegram
 
     sent_messages = []
@@ -553,7 +534,7 @@ def test_result_consumer_notifies_when_executor_already_set_terminal_status(monk
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -583,14 +564,14 @@ def test_result_consumer_notifies_when_executor_already_set_terminal_status(monk
             time.sleep(0.05)
 
     assert any(f"Task `{task.id}` failed" in m['text'] for m in sent_messages)
-    latest = asyncio.run(_latest_task_for_user(431))
+    latest = asyncio.run(latest_task_for_user(431))
     assert latest is not None
     assert latest.status == TaskStatus.FAILED
     assert latest.result == 'Task failed'
     assert latest.error == 'executor failed'
 
 
-def test_unknown_approval_callback_action_is_rejected(monkeypatch):
+def test_unknown_approval_callback_action_is_rejected(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -606,7 +587,7 @@ def test_unknown_approval_callback_action_is_rejected(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -628,13 +609,13 @@ def test_unknown_approval_callback_action_is_rejected(monkeypatch):
         )
         assert resp.status_code == 200
 
-    task = asyncio.run(_latest_task_for_user(551))
+    task = asyncio.run(latest_task_for_user(551))
     assert task is not None
     assert task.status == TaskStatus.WAITING_APPROVAL
     assert any('unsupported approval action' in text.lower() for text in callback_answers)
 
 
-def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monkeypatch):
+def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, bus, telegram
 
     sent_messages = []
@@ -648,7 +629,7 @@ def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monk
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(bus, 'publish_cancel', fake_publish_cancel)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.post(
@@ -669,14 +650,14 @@ def test_denied_callback_persists_canceled_status_when_cancel_publish_fails(monk
         )
         assert resp.status_code == 200
 
-    task = asyncio.run(_latest_task_for_user(561))
+    task = asyncio.run(latest_task_for_user(561))
     assert task is not None
     assert task.status == TaskStatus.CANCELED
     assert 'denied by user' in (task.error or '').lower()
     assert any('cancel signal delivery failed' in m['text'].lower() for m in sent_messages)
 
 
-def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
+def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, settings, telegram
 
     sent_messages = []
@@ -693,7 +674,7 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
     monkeypatch.setattr(settings, 'shell_allow_hard_block_override', True)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -715,7 +696,7 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
             json={'callback_query': {'id': 'cb-blocked', 'data': callback_data, 'from': {'id': 601}}},
         )
 
-    task = asyncio.run(_latest_task_for_user(601))
+    task = asyncio.run(latest_task_for_user(601))
     assert task is not None
     assert task.status == TaskStatus.FAILED
     assert 'blocked by shell policy during approval' in (task.error or '').lower()
@@ -724,7 +705,7 @@ def test_shell_approval_recheck_blocks_when_policy_tightens(monkeypatch):
     assert not any('approved and queued' in m['text'].lower() for m in sent_messages)
 
 
-def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch):
+def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, settings, telegram
 
     sent_messages = []
@@ -741,7 +722,7 @@ def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
     monkeypatch.setattr(settings, 'shell_allow_hard_block_override', True)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.post(
@@ -764,13 +745,13 @@ def test_shell_approval_block_persists_when_notification_send_fails(monkeypatch)
         )
         assert resp.status_code == 500
 
-    task = asyncio.run(_latest_task_for_user(602))
+    task = asyncio.run(latest_task_for_user(602))
     assert task is not None
     assert task.status == TaskStatus.FAILED
     assert 'blocked by shell policy during approval' in (task.error or '').lower()
 
 
-def test_shell_grant_not_issued_when_enqueue_after_approval_fails(monkeypatch):
+def test_shell_grant_not_issued_when_enqueue_after_approval_fails(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, bus, telegram
 
     sent_messages = []
@@ -788,7 +769,7 @@ def test_shell_grant_not_issued_when_enqueue_after_approval_fails(monkeypatch):
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
     monkeypatch.setattr(bus, 'publish_task', fake_publish_task)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app, raise_server_exceptions=False) as client:
         client.post(
@@ -810,14 +791,14 @@ def test_shell_grant_not_issued_when_enqueue_after_approval_fails(monkeypatch):
         )
         assert resp.status_code == 200
 
-    task = asyncio.run(_latest_task_for_user(603))
+    task = asyncio.run(latest_task_for_user(603))
     assert task is not None
     assert task.status == TaskStatus.FAILED
     assert asyncio.run(_has_active_shell_grant(603)) is False
     assert any('could not be queued after approval' in m['text'].lower() for m in sent_messages)
 
 
-def test_non_command_tool_response_appends_citations(monkeypatch):
+def test_non_command_tool_response_appends_citations(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, telegram
 
     sent_messages = []
@@ -850,7 +831,7 @@ def test_non_command_tool_response_appends_citations(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -868,7 +849,7 @@ def test_non_command_tool_response_appends_citations(monkeypatch):
     assert 'https://b.example' in final_msg
 
 
-def test_web_command_returns_sources(monkeypatch):
+def test_web_command_returns_sources(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram, web_search_client
 
     sent_messages = []
@@ -891,7 +872,7 @@ def test_web_command_returns_sources(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(web_search_client, 'search', fake_search)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -911,7 +892,7 @@ def test_web_command_returns_sources(monkeypatch):
     assert '(date: unknown)' in final_msg
 
 
-def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
+def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram, web_search_client
 
     sent_messages = []
@@ -935,7 +916,7 @@ def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(web_search_client, 'search', fake_search)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -959,7 +940,7 @@ def test_explicit_use_web_search_phrase_routes_to_web_command(monkeypatch):
     assert any('warning:' in m['text'].lower() for m in sent_messages)
 
 
-def test_time_sensitive_news_nl_query_uses_deterministic_web_path(monkeypatch):
+def test_time_sensitive_news_nl_query_uses_deterministic_web_path(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, telegram, web_search_client
 
     sent_messages = []
@@ -1000,7 +981,7 @@ def test_time_sensitive_news_nl_query_uses_deterministic_web_path(monkeypatch):
     monkeypatch.setattr(web_search_client, 'search', fake_search)
     monkeypatch.setattr(llm, 'chat_with_tools', fail_chat_with_tools)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1027,7 +1008,7 @@ def test_time_sensitive_news_nl_query_uses_deterministic_web_path(monkeypatch):
     assert '(date: unknown)' in final_msg
 
 
-def test_web_command_fail_open_notice(monkeypatch):
+def test_web_command_fail_open_notice(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, telegram, web_search_client
 
     sent_messages = []
@@ -1045,7 +1026,7 @@ def test_web_command_fail_open_notice(monkeypatch):
     monkeypatch.setattr(web_search_client, 'search', fake_search)
     monkeypatch.setattr(llm, 'chat', fake_chat)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1062,7 +1043,7 @@ def test_web_command_fail_open_notice(monkeypatch):
     assert 'fallback answer without live data' in final_msg.lower()
 
 
-def test_web_command_disabled(monkeypatch):
+def test_web_command_disabled(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, settings, telegram
 
     sent_messages = []
@@ -1073,7 +1054,7 @@ def test_web_command_disabled(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(settings, 'web_search_enabled', False)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1088,7 +1069,7 @@ def test_web_command_disabled(monkeypatch):
     assert any('web search is disabled' in m['text'].lower() for m in sent_messages)
 
 
-def test_web_tool_not_exposed_when_disabled(monkeypatch):
+def test_web_tool_not_exposed_when_disabled(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, settings, telegram
 
     sent_messages = []
@@ -1105,7 +1086,7 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
     monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
     monkeypatch.setattr(settings, 'web_search_enabled', False)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1121,7 +1102,7 @@ def test_web_tool_not_exposed_when_disabled(monkeypatch):
     assert any('no tools used' in m['text'].lower() for m in sent_messages)
 
 
-def test_browser_read_only_tool_executes_inline(monkeypatch):
+def test_browser_read_only_tool_executes_inline(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, settings, telegram
 
     sent_messages = []
@@ -1149,7 +1130,7 @@ def test_browser_read_only_tool_executes_inline(monkeypatch):
     monkeypatch.setattr(settings, 'browser_enabled', True)
     monkeypatch.setattr('services.coordinator.main._invoke_executor_browser_action', fake_browser_sync)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1165,7 +1146,7 @@ def test_browser_read_only_tool_executes_inline(monkeypatch):
     assert any('browser done' in message['text'].lower() for message in sent_messages)
 
 
-def test_browser_mutation_tool_queues_and_grants_on_approve(monkeypatch):
+def test_browser_mutation_tool_queues_and_grants_on_approve(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, settings, telegram
 
     sent_messages = []
@@ -1188,7 +1169,7 @@ def test_browser_mutation_tool_queues_and_grants_on_approve(monkeypatch):
     monkeypatch.setattr(settings, 'browser_enabled', True)
     monkeypatch.setattr(settings, 'browser_mutation_enabled', True)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1209,14 +1190,14 @@ def test_browser_mutation_tool_queues_and_grants_on_approve(monkeypatch):
         )
         assert callback_resp.status_code == 200
 
-    latest = asyncio.run(_latest_task_for_user(1402))
+    latest = asyncio.run(latest_task_for_user(1402))
     assert latest is not None
     assert latest.task_type == 'browser'
     assert latest.status == TaskStatus.QUEUED
     assert asyncio.run(_has_active_browser_grant(1402)) is True
 
 
-def test_browser_mutation_tool_reuses_active_grant(monkeypatch):
+def test_browser_mutation_tool_reuses_active_grant(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, llm, settings, telegram
 
     sent_messages = []
@@ -1238,7 +1219,7 @@ def test_browser_mutation_tool_reuses_active_grant(monkeypatch):
     monkeypatch.setattr(settings, 'browser_enabled', True)
     monkeypatch.setattr(settings, 'browser_mutation_enabled', True)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
@@ -1265,13 +1246,13 @@ def test_browser_mutation_tool_reuses_active_grant(monkeypatch):
         assert second.status_code == 200
 
     assert not any(message['reply_markup'] for message in sent_messages)
-    latest = asyncio.run(_latest_task_for_user(1403))
+    latest = asyncio.run(latest_task_for_user(1403))
     assert latest is not None
     assert latest.task_type == 'browser'
     assert latest.status == TaskStatus.QUEUED
 
 
-def test_invalid_remote_shell_syntax_is_rejected(monkeypatch):
+def test_invalid_remote_shell_syntax_is_rejected(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -1281,7 +1262,7 @@ def test_invalid_remote_shell_syntax_is_rejected(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
     with TestClient(app) as client:
         client.post(
             '/telegram/webhook',
