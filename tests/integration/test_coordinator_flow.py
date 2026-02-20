@@ -497,7 +497,7 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
 
 
 def test_duplicate_callback_update_id_is_ignored(monkeypatch):
-    from services.coordinator.main import app, telegram
+    from services.coordinator.main import app, telegram, telegram_update_deduper
 
     sent_messages = []
     callback_answers = []
@@ -513,6 +513,7 @@ def test_duplicate_callback_update_id_is_ignored(monkeypatch):
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
     invite_code = asyncio.run(_prepare_invite_code())
+    asyncio.run(telegram_update_deduper.clear())
 
     with TestClient(app) as client:
         client.post(
