@@ -123,7 +123,7 @@ def test_start_and_direct_response(monkeypatch):
 
 
 def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
-    from services.coordinator.main import app, llm, telegram
+    from services.coordinator.main import app, llm, telegram, telegram_update_deduper
 
     sent_messages = []
     llm_calls = 0
@@ -140,6 +140,7 @@ def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
     monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
 
     invite_code = asyncio.run(_prepare_invite_code())
+    asyncio.run(telegram_update_deduper.clear())
 
     with TestClient(app) as client:
         client.post(
