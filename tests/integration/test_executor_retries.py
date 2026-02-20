@@ -142,6 +142,59 @@ async def test_executor_retry_requeue_failure_marks_task_failed(monkeypatch):
         assert 'retry enqueue failed' in (updated.error or '').lower()
 
 
+async def test_executor_retry_ack_failure_does_not_mark_task_failed(monkeypatch):
+    from services.executor import main as executor_main
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        tenant, user, convo = await repo.get_or_create_default_tenant_user()
+        task = await repo.create_task(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            conversation_id=convo.id,
+            task_type='shell',
+            risk_tier='L2',
+            payload={'command': 'cat /definitely/missing/file'},
+            status=TaskStatus.QUEUED,
+        )
+        await db.commit()
+
+    envelope = TaskEnvelope(
+        task_id=UUID(task.id),
+        tenant_id=UUID(tenant.id),
+        user_id=UUID(user.id),
+        task_type=TaskType.SHELL,
+        payload={'command': 'cat /definitely/missing/file'},
+        risk_tier=RiskTier.L2,
+        created_at=datetime.utcnow(),
+    )
+
+    publish_calls: list[TaskEnvelope] = []
+
+    async def capture_publish_task(e):
+        publish_calls.append(e)
+
+    async def fail_ack_task(_):
+        raise RuntimeError('ack unavailable')
+
+    monkeypatch.setattr(executor_main.bus, 'publish_task', capture_publish_task)
+    monkeypatch.setattr(executor_main.bus, 'ack_task', fail_ack_task)
+    await executor_main._process_task_once('retry-ack-fail-1', envelope)
+
+    results = await executor_main.bus.read_results(consumer_name='test-retry-ack-fail', count=20, block_ms=10)
+    related_results = [result for _, result in results if str(result.task_id) == task.id]
+    assert related_results == []
+    assert len(publish_calls) == 1
+
+    async with AsyncSessionLocal() as db:
+        repo = CoreRepository(db)
+        updated = await repo.get_task(task.id)
+        assert updated is not None
+        assert updated.attempts == 1
+        assert updated.status == TaskStatus.QUEUED
+        assert 'retry 1:' in (updated.error or '').lower()
+
+
 async def test_executor_result_publish_failure_marks_task_failed(monkeypatch):
     from services.executor import main as executor_main
 

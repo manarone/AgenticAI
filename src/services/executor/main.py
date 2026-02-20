@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -406,11 +406,22 @@ async def _set_task_status_if_legal(
     next_status: TaskStatus,
     result: str | None = None,
     error: str | None = None,
+    allow_idempotent: bool = False,
 ):
+    """Set task status only for legal transitions.
+
+    Returns (changed, task). A same-status request is a no-op unless
+    allow_idempotent=True.
+    """
     current = await repo.get_task(task_id)
     if current is None:
         return False, None
-    if current.status != next_status and not can_transition(current.status, next_status):
+    if current.status == next_status:
+        if not allow_idempotent:
+            return False, current
+        updated = await repo.update_task_status(task_id, next_status, result=result, error=error)
+        return updated is not None, updated or current
+    if not can_transition(current.status, next_status):
         logger.warning(
             'Blocked illegal task transition task_id=%s current=%s next=%s',
             task_id,
@@ -466,6 +477,11 @@ async def _process_task_once(message_id: str, envelope) -> None:
             next_status=TaskStatus.RUNNING,
         )
         if not transitioned or updated is None:
+            logger.error(
+                'Unable to transition task to RUNNING task_id=%s status=%s',
+                task.id,
+                updated.status.value if updated is not None else 'missing',
+            )
             await db.commit()
             await bus.ack_task(message_id)
             return
@@ -493,7 +509,7 @@ async def _process_task_once(message_id: str, envelope) -> None:
                         success=False,
                         output='Task failed',
                         error=str(exc),
-                        created_at=datetime.utcnow(),
+                        created_at=datetime.now(timezone.utc),
                     )
                 )
                 TASK_COUNTER.labels(status='failed').inc()
@@ -512,9 +528,6 @@ async def _process_task_once(message_id: str, envelope) -> None:
                 if transitioned:
                     try:
                         await bus.publish_task(envelope)
-                        TASK_COUNTER.labels(status='retry').inc()
-                        await bus.ack_task(message_id)
-                        return
                     except Exception as requeue_exc:
                         failure_error = f'Retry enqueue failed: {requeue_exc}'
                         transitioned, _ = await _set_task_status_if_legal(
@@ -533,12 +546,22 @@ async def _process_task_once(message_id: str, envelope) -> None:
                                     success=False,
                                     output='Task failed',
                                     error=failure_error,
-                                    created_at=datetime.utcnow(),
+                                    created_at=datetime.now(timezone.utc),
                                 )
                             )
                             TASK_COUNTER.labels(status='failed').inc()
                         await bus.ack_task(message_id)
                         return
+                    TASK_COUNTER.labels(status='retry').inc()
+                    try:
+                        await bus.ack_task(message_id)
+                    except Exception:
+                        logger.exception(
+                            'Failed to ack task after successful retry enqueue task_id=%s message_id=%s',
+                            task.id,
+                            message_id,
+                        )
+                    return
 
             transitioned, _ = await _set_task_status_if_legal(
                 repo,
@@ -556,7 +579,7 @@ async def _process_task_once(message_id: str, envelope) -> None:
                         success=False,
                         output='Task failed',
                         error=str(exc),
-                        created_at=datetime.utcnow(),
+                        created_at=datetime.now(timezone.utc),
                     )
                 )
                 TASK_COUNTER.labels(status='failed').inc()
@@ -570,7 +593,7 @@ async def _process_task_once(message_id: str, envelope) -> None:
                 user_id=envelope.user_id,
                 success=True,
                 output=output,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
             )
         )
         if published:
@@ -593,7 +616,7 @@ async def _process_task_once(message_id: str, envelope) -> None:
                         success=False,
                         output='Task failed',
                         error=failure_error,
-                        created_at=datetime.utcnow(),
+                        created_at=datetime.now(timezone.utc),
                     )
                 )
                 TASK_COUNTER.labels(status='failed').inc()

@@ -1500,6 +1500,11 @@ async def _set_task_status_if_legal(
     error: str | None = None,
     allow_idempotent: bool = False,
 ):
+    """Set task status only for legal transitions.
+
+    Returns (changed, task). A same-status request is treated as a no-op
+    unless allow_idempotent=True, in which case result/error can be refreshed.
+    """
     current = await repo.get_task(task_id)
     if current is None:
         return False, None
@@ -1507,7 +1512,7 @@ async def _set_task_status_if_legal(
         if allow_idempotent:
             updated = await repo.update_task_status(task_id, next_status, result=result, error=error)
             return updated is not None, updated or current
-        return True, current
+        return False, current
     if not can_transition(current.status, next_status):
         logger.warning(
             'Blocked illegal task transition task_id=%s current=%s next=%s',
@@ -1521,6 +1526,10 @@ async def _set_task_status_if_legal(
 
 
 async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> bool:
+    if task.status == TaskStatus.QUEUED:
+        logger.info('Skipping approval queue for already queued task task_id=%s', task.id)
+        return False
+
     transitioned, updated = await _set_task_status_if_legal(
         repo,
         task_id=task.id,
