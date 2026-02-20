@@ -14,7 +14,8 @@ Conflict resolution:
 1. Step-4 `Explicitly NOT in MVP` is authoritative for beta blockers.
 2. `README.md` capabilities remain in-scope when they improve core reliability/safety.
 3. `docs/high-level.md` Phase 1 capabilities are included only if not blocked by Step-4 exclusions.
-4. Heartbeat and basic RAG are post-beta.
+4. `docs/high-level.md` Phase 2 and `docs/idea-to-first-customer.md` Step 6 capabilities are included when required for private beta operations (3-5 users) and not blocked by Step-4 exclusions.
+5. Heartbeat and basic RAG are post-beta.
 
 ## Beta-Blocking
 - Telegram bot onboarding via invite code (`/start <invite>`)
