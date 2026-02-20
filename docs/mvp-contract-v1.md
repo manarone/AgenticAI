@@ -6,7 +6,9 @@ This document is the single source of truth for MVP parity and private beta read
 Sources merged:
 - `README.md`
 - `docs/idea-to-first-customer.md` (Step 4)
+- `docs/idea-to-first-customer.md` (Step 6)
 - `docs/high-level.md` (Phase 1)
+- `docs/high-level.md` (Phase 2)
 
 Conflict resolution:
 1. Step-4 `Explicitly NOT in MVP` is authoritative for beta blockers.
@@ -52,7 +54,7 @@ Conflict resolution:
 - All tests marked `beta_blocking` pass
 - No unresolved failures in tests marked `safety_critical`
 - PR gate and full-suite gate are green
-- Smoke runbook succeeds end-to-end
+- All tests marked `mvp_smoke` pass and smoke runbook succeeds end-to-end
 - Known gaps are only in Experimental or Post-Beta sections
 
 ## Test Marker Standard

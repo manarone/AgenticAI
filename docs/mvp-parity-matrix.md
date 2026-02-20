@@ -17,7 +17,7 @@
 | PR CI speed + risk coverage | Plan + CI guidance | `.github/workflows/ci.yml` currently full pytest | Tiered gate + separate full-suite workflow | Yes | PR-02 |
 | One-command beta smoke verification | Plan | No dedicated smoke script | Add `scripts/beta_smoke.sh` + runbook go/no-go | Yes | PR-07 |
 | Browser automation | Phase 3, Step-4 excluded | Browser code + tests exist | Keep non-blocking | No | N/A |
-| Remote shell execution path | `README.md` (existing capability), Step-4 exclusion scope | `src/services/executor/main.py`, `tests/integration/test_executor_shell_policy.py` | Keep non-blocking for private beta while preserving safety policy coverage | No | N/A |
+| Remote shell execution path | `README.md`, `docs/idea-to-first-customer.md` (Step 4 exclusion) | `src/services/executor/main.py`, `tests/integration/test_executor_shell_policy.py` | Keep non-blocking for private beta while preserving safety policy coverage | No | N/A |
 | Voice pipeline | Phase 3, Step-4 excluded | Not implemented | Explicit post-beta | No | Post-beta |
 | Event listeners | Phase 3, Step-4 excluded | Not implemented | Explicit post-beta | No | Post-beta |
 | Heartbeat system | Phase 1 optional + open questions | Not implemented | Explicit post-beta | No | Post-beta |
@@ -28,3 +28,7 @@
 - Beta-Blocking: all rows marked `Blocking? = Yes`
 - Experimental/Non-Blocking: browser and optional advanced capabilities
 - Post-Beta: heartbeat, RAG, event listeners, voice, billing, marketing, full namespace isolation
+
+## Implementation Staging Note
+- Rows with future `Target PR` values are planned deltas, not current-state guarantees.
+- Specifically: pytest marker registration is delivered in PR-02; `scripts/beta_smoke.sh` is delivered in PR-07.
