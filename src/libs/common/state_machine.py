@@ -2,9 +2,10 @@ from libs.common.enums import TaskStatus
 
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.QUEUED: {TaskStatus.DISPATCHING, TaskStatus.CANCELED},
+    TaskStatus.QUEUED: {TaskStatus.DISPATCHING, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.DISPATCHING: {TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELED},
     TaskStatus.RUNNING: {
+        TaskStatus.QUEUED,
         TaskStatus.SUCCEEDED,
         TaskStatus.FAILED,
         TaskStatus.CANCELED,

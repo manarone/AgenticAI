@@ -571,6 +571,51 @@ def test_result_consumer_notifies_when_executor_already_set_terminal_status(monk
     assert latest.error == 'executor failed'
 
 
+def test_duplicate_result_events_notify_once(monkeypatch, prepare_invite_code, latest_task_for_user):
+    from services.coordinator.main import app, bus, telegram
+
+    sent_messages = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+
+    invite_code = asyncio.run(prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 432}, 'chat': {'id': 432}}},
+        )
+
+        task, identity = asyncio.run(_create_task_for_user(432, status=TaskStatus.RUNNING, payload={'command': 'shell: ls'}))
+        duplicate_result = TaskResult(
+            task_id=UUID(task.id),
+            tenant_id=UUID(identity.tenant_id),
+            user_id=UUID(identity.user_id),
+            success=False,
+            output='Task failed',
+            error='executor failed',
+            created_at=datetime.utcnow(),
+        )
+        asyncio.run(bus.publish_result(duplicate_result))
+        asyncio.run(bus.publish_result(duplicate_result))
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if sum(1 for m in sent_messages if f"Task `{task.id}` failed" in m['text']) >= 1:
+                break
+            time.sleep(0.05)
+
+    assert sum(1 for m in sent_messages if f"Task `{task.id}` failed" in m['text']) == 1
+    latest = asyncio.run(latest_task_for_user(432))
+    assert latest is not None
+    assert latest.status == TaskStatus.FAILED
+    assert latest.result == 'Task failed'
+    assert latest.error == 'executor failed'
+
+
 def test_unknown_approval_callback_action_is_rejected(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 

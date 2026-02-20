@@ -399,6 +399,39 @@ async def _execute_task(task, envelope, repo: CoreRepository) -> str:
     raise NonRetriableExecutionError(f'Unsupported task type: {task_type.value}')
 
 
+async def _set_task_status_if_legal(
+    repo: CoreRepository,
+    *,
+    task_id: str,
+    next_status: TaskStatus,
+    result: str | None = None,
+    error: str | None = None,
+):
+    current = await repo.get_task(task_id)
+    if current is None:
+        return False, None
+    if current.status != next_status and not can_transition(current.status, next_status):
+        logger.warning(
+            'Blocked illegal task transition task_id=%s current=%s next=%s',
+            task_id,
+            current.status.value,
+            next_status.value,
+        )
+        return False, current
+
+    updated = await repo.update_task_status(task_id, next_status, result=result, error=error)
+    return updated is not None, updated or current
+
+
+async def _publish_result_safe(result: TaskResult) -> tuple[bool, str | None]:
+    try:
+        await bus.publish_result(result)
+        return True, None
+    except Exception as exc:
+        logger.exception('Failed to publish task result task_id=%s', result.task_id)
+        return False, str(exc)
+
+
 async def _process_task_once(message_id: str, envelope) -> None:
     async with AsyncSessionLocal() as db:
         repo = CoreRepository(db)
@@ -411,55 +444,48 @@ async def _process_task_once(message_id: str, envelope) -> None:
             await bus.ack_task(message_id)
             return
 
-        if task.status not in {TaskStatus.QUEUED, TaskStatus.DISPATCHING, TaskStatus.RUNNING}:
+        if task.status not in {TaskStatus.QUEUED, TaskStatus.DISPATCHING}:
             await bus.ack_task(message_id)
             return
 
-        if can_transition(task.status, TaskStatus.DISPATCHING):
-            await repo.update_task_status(task.id, TaskStatus.DISPATCHING)
+        if task.status == TaskStatus.QUEUED:
+            transitioned, updated = await _set_task_status_if_legal(
+                repo,
+                task_id=task.id,
+                next_status=TaskStatus.DISPATCHING,
+            )
+            if not transitioned or updated is None:
+                await db.commit()
+                await bus.ack_task(message_id)
+                return
+            task = updated
+
+        transitioned, updated = await _set_task_status_if_legal(
+            repo,
+            task_id=task.id,
+            next_status=TaskStatus.RUNNING,
+        )
+        if not transitioned or updated is None:
+            await db.commit()
+            await bus.ack_task(message_id)
+            return
+        task = updated
 
         attempts = await repo.increment_task_attempt(task.id)
-        await repo.update_task_status(task.id, TaskStatus.RUNNING)
         await db.commit()
 
         try:
             output = await _execute_task(task, envelope, repo)
-            await bus.publish_result(
-                TaskResult(
-                    task_id=envelope.task_id,
-                    tenant_id=envelope.tenant_id,
-                    user_id=envelope.user_id,
-                    success=True,
-                    output=output,
-                    created_at=datetime.utcnow(),
-                )
-            )
-            TASK_COUNTER.labels(status='success').inc()
         except NonRetriableExecutionError as exc:
-            await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
-            await db.commit()
-            await bus.publish_result(
-                TaskResult(
-                    task_id=envelope.task_id,
-                    tenant_id=envelope.tenant_id,
-                    user_id=envelope.user_id,
-                    success=False,
-                    output='Task failed',
-                    error=str(exc),
-                    created_at=datetime.utcnow(),
-                )
+            transitioned, _ = await _set_task_status_if_legal(
+                repo,
+                task_id=task.id,
+                next_status=TaskStatus.FAILED,
+                error=str(exc),
             )
-            TASK_COUNTER.labels(status='failed').inc()
-        except Exception as exc:
-            if attempts <= settings.max_executor_retries:
-                await repo.update_task_status(task.id, TaskStatus.QUEUED, error=f'Retry {attempts}: {exc}')
-                await db.commit()
-                await bus.publish_task(envelope)
-                TASK_COUNTER.labels(status='retry').inc()
-            else:
-                await repo.update_task_status(task.id, TaskStatus.FAILED, error=str(exc))
-                await db.commit()
-                await bus.publish_result(
+            await db.commit()
+            if transitioned:
+                await _publish_result_safe(
                     TaskResult(
                         task_id=envelope.task_id,
                         tenant_id=envelope.tenant_id,
@@ -467,6 +493,106 @@ async def _process_task_once(message_id: str, envelope) -> None:
                         success=False,
                         output='Task failed',
                         error=str(exc),
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                TASK_COUNTER.labels(status='failed').inc()
+            await bus.ack_task(message_id)
+            return
+        except Exception as exc:
+            should_retry = attempts <= settings.max_executor_retries
+            if should_retry:
+                transitioned, _ = await _set_task_status_if_legal(
+                    repo,
+                    task_id=task.id,
+                    next_status=TaskStatus.QUEUED,
+                    error=f'Retry {attempts}: {exc}',
+                )
+                await db.commit()
+                if transitioned:
+                    try:
+                        await bus.publish_task(envelope)
+                        TASK_COUNTER.labels(status='retry').inc()
+                        await bus.ack_task(message_id)
+                        return
+                    except Exception as requeue_exc:
+                        failure_error = f'Retry enqueue failed: {requeue_exc}'
+                        transitioned, _ = await _set_task_status_if_legal(
+                            repo,
+                            task_id=task.id,
+                            next_status=TaskStatus.FAILED,
+                            error=failure_error,
+                        )
+                        await db.commit()
+                        if transitioned:
+                            await _publish_result_safe(
+                                TaskResult(
+                                    task_id=envelope.task_id,
+                                    tenant_id=envelope.tenant_id,
+                                    user_id=envelope.user_id,
+                                    success=False,
+                                    output='Task failed',
+                                    error=failure_error,
+                                    created_at=datetime.utcnow(),
+                                )
+                            )
+                            TASK_COUNTER.labels(status='failed').inc()
+                        await bus.ack_task(message_id)
+                        return
+
+            transitioned, _ = await _set_task_status_if_legal(
+                repo,
+                task_id=task.id,
+                next_status=TaskStatus.FAILED,
+                error=str(exc),
+            )
+            await db.commit()
+            if transitioned:
+                await _publish_result_safe(
+                    TaskResult(
+                        task_id=envelope.task_id,
+                        tenant_id=envelope.tenant_id,
+                        user_id=envelope.user_id,
+                        success=False,
+                        output='Task failed',
+                        error=str(exc),
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                TASK_COUNTER.labels(status='failed').inc()
+            await bus.ack_task(message_id)
+            return
+
+        published, publish_error = await _publish_result_safe(
+            TaskResult(
+                task_id=envelope.task_id,
+                tenant_id=envelope.tenant_id,
+                user_id=envelope.user_id,
+                success=True,
+                output=output,
+                created_at=datetime.utcnow(),
+            )
+        )
+        if published:
+            TASK_COUNTER.labels(status='success').inc()
+        else:
+            failure_error = f'Failed to publish task result ({publish_error})'
+            transitioned, _ = await _set_task_status_if_legal(
+                repo,
+                task_id=task.id,
+                next_status=TaskStatus.FAILED,
+                error=failure_error,
+            )
+            await db.commit()
+            if transitioned:
+                await _publish_result_safe(
+                    TaskResult(
+                        task_id=envelope.task_id,
+                        tenant_id=envelope.tenant_id,
+                        user_id=envelope.user_id,
+                        success=False,
+                        output='Task failed',
+                        error=failure_error,
                         created_at=datetime.utcnow(),
                     )
                 )

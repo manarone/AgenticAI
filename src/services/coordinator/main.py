@@ -1491,8 +1491,45 @@ async def _handle_user_message(repo: CoreRepository, db: AsyncSession, identity,
             await _send_telegram_message(chat_id, f'Task queued: {task.id}')
 
 
+async def _set_task_status_if_legal(
+    repo: CoreRepository,
+    *,
+    task_id: str,
+    next_status: TaskStatus,
+    result: str | None = None,
+    error: str | None = None,
+    allow_idempotent: bool = False,
+):
+    current = await repo.get_task(task_id)
+    if current is None:
+        return False, None
+    if current.status == next_status:
+        if allow_idempotent:
+            updated = await repo.update_task_status(task_id, next_status, result=result, error=error)
+            return updated is not None, updated or current
+        return True, current
+    if not can_transition(current.status, next_status):
+        logger.warning(
+            'Blocked illegal task transition task_id=%s current=%s next=%s',
+            task_id,
+            current.status.value,
+            next_status.value,
+        )
+        return False, current
+    updated = await repo.update_task_status(task_id, next_status, result=result, error=error)
+    return updated is not None, updated or current
+
+
 async def _queue_task_after_approval(repo: CoreRepository, db: AsyncSession, task, approval_id: str, chat_id: str) -> bool:
-    await repo.update_task_status(task.id, TaskStatus.QUEUED)
+    transitioned, updated = await _set_task_status_if_legal(
+        repo,
+        task_id=task.id,
+        next_status=TaskStatus.QUEUED,
+    )
+    if not transitioned or updated is None:
+        await db.commit()
+        return False
+    task = updated
     await db.commit()
     try:
         risk_tier = RiskTier(task.risk_tier)
@@ -1543,7 +1580,12 @@ async def _publish_task_with_recovery(
         await bus.publish_task(envelope)
     except Exception as exc:
         logger.exception('Failed to publish task task_id=%s', task.id)
-        await repo.update_task_status(task.id, TaskStatus.FAILED, error=f'Failed to enqueue task ({exc}).')
+        await _set_task_status_if_legal(
+            repo,
+            task_id=task.id,
+            next_status=TaskStatus.FAILED,
+            error=f'Failed to enqueue task ({exc}).',
+        )
         await append_audit(
             db,
             tenant_id=task.tenant_id,
@@ -1613,7 +1655,12 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
         grant_issue_error: str | None = None
 
         if decision == ApprovalDecision.DENIED:
-            await repo.update_task_status(task.id, TaskStatus.CANCELED, error='Denied by user')
+            await _set_task_status_if_legal(
+                repo,
+                task_id=task.id,
+                next_status=TaskStatus.CANCELED,
+                error='Denied by user',
+            )
             await db.commit()
             try:
                 await bus.publish_cancel(task.id)
@@ -1636,9 +1683,10 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                 )
                 if shell_policy.decision == ShellPolicyDecision.BLOCKED:
                     callback_text = 'Blocked by safety policy'
-                    await repo.update_task_status(
-                        task.id,
-                        TaskStatus.FAILED,
+                    await _set_task_status_if_legal(
+                        repo,
+                        task_id=task.id,
+                        next_status=TaskStatus.FAILED,
                         error=f'Blocked by shell policy during approval ({shell_policy.reason})',
                     )
                     await append_audit(
@@ -1690,27 +1738,30 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
                 action_class = classify_browser_action(action_name)
                 if not settings.browser_enabled:
                     callback_text = 'Browser automation disabled'
-                    await repo.update_task_status(
-                        task.id,
-                        TaskStatus.FAILED,
+                    await _set_task_status_if_legal(
+                        repo,
+                        task_id=task.id,
+                        next_status=TaskStatus.FAILED,
                         error='Browser automation is disabled by configuration',
                     )
                     await db.commit()
                     await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed: browser automation is disabled.')
                 elif action_class == BrowserActionClass.UNSUPPORTED:
                     callback_text = 'Unsupported browser action'
-                    await repo.update_task_status(
-                        task.id,
-                        TaskStatus.FAILED,
+                    await _set_task_status_if_legal(
+                        repo,
+                        task_id=task.id,
+                        next_status=TaskStatus.FAILED,
                         error=f'Unsupported browser action during approval: {action_name}',
                     )
                     await db.commit()
                     await _send_telegram_message(chat_id, f'Task {task.id[:8]} failed: unsupported browser action.')
                 elif action_class == BrowserActionClass.MUTATING and not settings.browser_mutation_enabled:
                     callback_text = 'Browser mutations disabled'
-                    await repo.update_task_status(
-                        task.id,
-                        TaskStatus.FAILED,
+                    await _set_task_status_if_legal(
+                        repo,
+                        task_id=task.id,
+                        next_status=TaskStatus.FAILED,
                         error='Mutating browser actions are disabled by configuration',
                     )
                     await db.commit()
