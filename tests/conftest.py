@@ -90,3 +90,36 @@ async def reset_state():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture
+def prepare_invite_code():
+    async def _prepare() -> str:
+        from libs.common.db import AsyncSessionLocal
+        from libs.common.repositories import CoreRepository
+
+        async with AsyncSessionLocal() as db:
+            repo = CoreRepository(db)
+            tenant, _, _ = await repo.get_or_create_default_tenant_user()
+            invite = await repo.create_invite_code(tenant_id=tenant.id, ttl_hours=24)
+            await db.commit()
+            return invite.code
+
+    return _prepare
+
+
+@pytest.fixture
+def latest_task_for_user():
+    async def _latest(telegram_user_id: int):
+        from libs.common.db import AsyncSessionLocal
+        from libs.common.repositories import CoreRepository
+
+        async with AsyncSessionLocal() as db:
+            repo = CoreRepository(db)
+            identity = await repo.get_identity(str(telegram_user_id))
+            if identity is None:
+                return None
+            tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id, limit=1)
+            return tasks[0] if tasks else None
+
+    return _latest

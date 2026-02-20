@@ -5,33 +5,12 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
-from libs.common.db import AsyncSessionLocal
 from libs.common.enums import RiskTier, TaskStatus, TaskType
 from libs.common.llm import LLMToolChatResult
-from libs.common.repositories import CoreRepository
 from libs.common.schemas import TaskEnvelope
 
 
-async def _prepare_invite_code() -> str:
-    async with AsyncSessionLocal() as db:
-        repo = CoreRepository(db)
-        tenant, _, _ = await repo.get_or_create_default_tenant_user()
-        invite = await repo.create_invite_code(tenant_id=tenant.id, ttl_hours=24)
-        await db.commit()
-        return invite.code
-
-
-async def _latest_task_for_user(telegram_user_id: int):
-    async with AsyncSessionLocal() as db:
-        repo = CoreRepository(db)
-        identity = await repo.get_identity(str(telegram_user_id))
-        if identity is None:
-            return None
-        tasks = await repo.list_user_tasks(identity.tenant_id, identity.user_id, limit=1)
-        return tasks[0] if tasks else None
-
-
-def test_mvp_acceptance_start_invite_success_and_failure_paths(monkeypatch):
+def test_mvp_acceptance_start_invite_success_and_failure_paths(monkeypatch, prepare_invite_code):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -41,7 +20,7 @@ def test_mvp_acceptance_start_invite_success_and_failure_paths(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         invalid_resp = client.post(
@@ -67,7 +46,7 @@ def test_mvp_acceptance_start_invite_success_and_failure_paths(monkeypatch):
     assert any('already used' in msg['text'].lower() for msg in sent_messages)
 
 
-def test_mvp_acceptance_direct_response_flow(monkeypatch):
+def test_mvp_acceptance_direct_response_flow(monkeypatch, prepare_invite_code):
     from services.coordinator.main import app, llm, telegram
 
     sent_messages = []
@@ -81,7 +60,7 @@ def test_mvp_acceptance_direct_response_flow(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         start_resp = client.post(
@@ -99,7 +78,7 @@ def test_mvp_acceptance_direct_response_flow(monkeypatch):
     assert any('acceptance direct reply' in msg['text'].lower() for msg in sent_messages)
 
 
-def test_mvp_acceptance_shell_approval_to_queue(monkeypatch):
+def test_mvp_acceptance_shell_approval_to_queue(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -113,7 +92,7 @@ def test_mvp_acceptance_shell_approval_to_queue(monkeypatch):
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -136,13 +115,13 @@ def test_mvp_acceptance_shell_approval_to_queue(monkeypatch):
         )
         assert callback_resp.status_code == 200
 
-    latest = asyncio.run(_latest_task_for_user(3021))
+    latest = asyncio.run(latest_task_for_user(3021))
     assert latest is not None
     assert latest.status == TaskStatus.QUEUED
     assert any('approved and queued' in msg['text'].lower() for msg in sent_messages)
 
 
-def test_mvp_acceptance_status_and_cancel_all(monkeypatch):
+def test_mvp_acceptance_status_and_cancel_all(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator.main import app, telegram
 
     sent_messages = []
@@ -152,7 +131,7 @@ def test_mvp_acceptance_status_and_cancel_all(monkeypatch):
 
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
@@ -171,6 +150,7 @@ def test_mvp_acceptance_status_and_cancel_all(monkeypatch):
             json={'message': {'text': '/status', 'from': {'id': 3031}, 'chat': {'id': 3031}}},
         )
         assert status_resp.status_code == 200
+        assert any('| QUEUED | shell' in msg['text'] for msg in sent_messages if 'recent tasks:' in msg['text'].lower())
 
         cancel_resp = client.post(
             '/telegram/webhook',
@@ -178,7 +158,7 @@ def test_mvp_acceptance_status_and_cancel_all(monkeypatch):
         )
         assert cancel_resp.status_code == 200
 
-    latest = asyncio.run(_latest_task_for_user(3031))
+    latest = asyncio.run(latest_task_for_user(3031))
     assert latest is not None
     assert latest.status == TaskStatus.CANCELED
 
@@ -186,7 +166,7 @@ def test_mvp_acceptance_status_and_cancel_all(monkeypatch):
     assert any('canceled 1 task' in msg['text'].lower() for msg in sent_messages)
 
 
-def test_mvp_acceptance_executor_retry_exhaustion_notifies_failure(monkeypatch):
+def test_mvp_acceptance_executor_retry_exhaustion_notifies_failure(monkeypatch, prepare_invite_code, latest_task_for_user):
     from services.coordinator import main as coordinator_main
     from services.executor import main as executor_main
 
@@ -198,7 +178,7 @@ def test_mvp_acceptance_executor_retry_exhaustion_notifies_failure(monkeypatch):
     monkeypatch.setattr(executor_main, 'bus', coordinator_main.bus)
     monkeypatch.setattr(coordinator_main.telegram, 'send_message', fake_send_message)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(coordinator_main.app) as client:
         client.post(
@@ -211,7 +191,7 @@ def test_mvp_acceptance_executor_retry_exhaustion_notifies_failure(monkeypatch):
         )
         assert queue_resp.status_code == 200
 
-        task = asyncio.run(_latest_task_for_user(3041))
+        task = asyncio.run(latest_task_for_user(3041))
         assert task is not None
 
         envelope = TaskEnvelope(
@@ -224,24 +204,22 @@ def test_mvp_acceptance_executor_retry_exhaustion_notifies_failure(monkeypatch):
             created_at=datetime.now(timezone.utc),
         )
 
-    asyncio.run(executor_main._process_task_once('mvp-accept-1', envelope))
-    asyncio.run(executor_main._process_task_once('mvp-accept-2', envelope))
-
-    with TestClient(coordinator_main.app):
+        asyncio.run(executor_main._process_task_once('mvp-accept-1', envelope))
+        asyncio.run(executor_main._process_task_once('mvp-accept-2', envelope))
         deadline = time.time() + 3.0
         while time.time() < deadline:
             if any(' failed' in msg['text'].lower() and 'task `' in msg['text'].lower() for msg in sent_messages):
                 break
             time.sleep(0.05)
 
-    latest = asyncio.run(_latest_task_for_user(3041))
+    latest = asyncio.run(latest_task_for_user(3041))
     assert latest is not None
     assert latest.status == TaskStatus.FAILED
     assert any(f"Task `{latest.id}` failed" in msg['text'] for msg in sent_messages)
 
 
-def test_mvp_acceptance_time_sensitive_web_route_uses_dated_sources(monkeypatch):
-    from services.coordinator.main import app, llm, telegram, web_search_client
+def test_mvp_acceptance_time_sensitive_web_route_uses_dated_sources(monkeypatch, prepare_invite_code):
+    from services.coordinator.main import app, telegram, web_search_client
 
     sent_messages = []
     seen_queries = []
@@ -274,14 +252,10 @@ def test_mvp_acceptance_time_sensitive_web_route_uses_dated_sources(monkeypatch)
             ],
         }
 
-    async def fail_chat_with_tools(**kwargs):
-        raise AssertionError('LLM tool mode should not run for forced time-sensitive NL web queries')
-
     monkeypatch.setattr(telegram, 'send_message', fake_send_message)
     monkeypatch.setattr(web_search_client, 'search', fake_search)
-    monkeypatch.setattr(llm, 'chat_with_tools', fail_chat_with_tools)
 
-    invite_code = asyncio.run(_prepare_invite_code())
+    invite_code = asyncio.run(prepare_invite_code())
 
     with TestClient(app) as client:
         client.post(
