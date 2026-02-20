@@ -22,3 +22,27 @@
 - Required CI checks: pass.
 - No unresolved blocking bot/human review findings.
 - If uncertain whether a finding is blocking, treat it as blocking until clarified.
+
+## Branch Consistency Loop (Required)
+1. At session start and before final handoff, run:
+   `git fetch origin --prune`
+   `git remote prune origin`
+2. Keep local `main` aligned with GitHub using fast-forward only:
+   `git switch main`
+   `git merge --ff-only origin/main`
+3. Verify local branches track an upstream and have zero drift:
+   `git for-each-ref refs/heads --format='%(refname:short) %(upstream:short)'`
+   `git rev-list --left-right --count <local_branch>...<upstream_branch>`
+4. Treat `[gone]` upstreams as stale and resolve immediately:
+   if merged: delete local branch.
+   if not merged: push branch or create a backup tag before deleting.
+5. After a PR merges, clean up branch state:
+   delete remote feature branch.
+   delete local feature branch.
+   sync `main` again.
+6. If git warns about broken refs (for example duplicate branch files like `<name> 2` under `.git/refs/heads`), remove the malformed ref file and repeat step 1.
+
+## Consistency Guardrails
+- Use branch names that match `codex/<topic>` with no spaces.
+- Avoid direct commits on `main`; do feature work on branches only.
+- If a sync command fails, stop and fix repository health before continuing feature work.
