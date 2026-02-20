@@ -122,6 +122,49 @@ def test_start_and_direct_response(monkeypatch):
     assert any('mvp fallback response' in m['text'].lower() for m in sent_messages)
 
 
+def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
+    from services.coordinator.main import app, llm, telegram
+
+    sent_messages = []
+    llm_calls = 0
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        nonlocal llm_calls
+        llm_calls += 1
+        return LLMToolChatResult(text='single response', prompt_tokens=1, completion_tokens=1, tool_records=[])
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1710}, 'chat': {'id': 1710}}},
+        )
+
+        duplicate_payload = {
+            'update_id': 910001,
+            'message': {
+                'text': 'hello once',
+                'from': {'id': 1710},
+                'chat': {'id': 1710},
+            },
+        }
+        first = client.post('/telegram/webhook', json=duplicate_payload)
+        second = client.post('/telegram/webhook', json=duplicate_payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json().get('duplicate') is True
+    assert llm_calls == 1
+    assert sum(1 for m in sent_messages if m['text'] == 'single response') == 1
+
+
 def test_new_command_starts_new_conversation(monkeypatch):
     from services.coordinator.main import app, telegram
 
