@@ -106,5 +106,6 @@ Set optional env for custom registry/name:
 - `TAG` (default `local`)
 
 ## CI/CD
-- `.github/workflows/ci.yml`: syntax + pytest + kustomize render checks on push/PR.
+- `.github/workflows/ci.yml`: syntax + tiered pytest gate (`mvp_smoke` or `safety_critical`) + kustomize render checks on push/PR.
+- `.github/workflows/ci-full.yml`: full `pytest -q` gate on `main`, nightly schedule, and manual dispatch.
 - `.github/workflows/image.yml`: Buildah image build and GHCR push on `main`/tags.

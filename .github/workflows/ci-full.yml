@@ -1,12 +1,14 @@
-name: CI
+name: CI Full
 
 on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
   push:
-    branches-ignore: ['main']
-  pull_request:
+    branches: ['main']
 
 jobs:
-  test:
+  full-test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,8 +32,8 @@ jobs:
       - name: Static syntax check
         run: python -m py_compile $(find src -name '*.py') $(find tests -name '*.py') scripts/init_db.py
 
-      - name: Run tests
-        run: pytest -q -m "mvp_smoke or safety_critical"
+      - name: Run full test suite
+        run: pytest -q
 
       - name: Render Kubernetes overlays
         run: |
