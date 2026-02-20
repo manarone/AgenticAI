@@ -18,6 +18,7 @@ os.environ['MAX_EXECUTOR_RETRIES'] = '1'
 _MVP_SMOKE_TEST_PATHS = (
     'tests/integration/test_coordinator_flow.py',
     'tests/integration/test_executor_retries.py',
+    'tests/integration/test_mvp_acceptance.py',
 )
 _SAFETY_CRITICAL_TEST_PATHS = (
     'tests/unit/test_shell_policy.py',
