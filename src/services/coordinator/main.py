@@ -103,6 +103,7 @@ class _InMemoryUpdateDeduper:
         now = perf_counter()
         expires_at = now + max(ttl_seconds, 1)
         async with self._lock:
+            # This fallback path is only used if Redis is unavailable, so an O(n) sweep is acceptable.
             expired = [entry for entry, expiry in self._expirations.items() if expiry <= now]
             for entry in expired:
                 self._expirations.pop(entry, None)
@@ -185,20 +186,18 @@ async def _send_telegram_message(
 
 
 async def _register_telegram_update(update_id: int) -> bool:
-    if update_id <= 0:
-        return True
-
     ttl_seconds = max(30, int(settings.telegram_update_dedupe_ttl_seconds))
-    dedupe_key = f'agentai:telegram:update:{update_id}'
+    redis_key = f'agentai:telegram:update:{update_id}'
     redis_client = getattr(bus, 'redis', None)
     if redis_client is not None:
         try:
-            created = await redis_client.set(dedupe_key, '1', ex=ttl_seconds, nx=True)
+            created = await redis_client.set(redis_key, '1', ex=ttl_seconds, nx=True)
             return bool(created)
         except Exception:
+            # Degrades to per-process dedupe only; cross-process dedupe requires Redis.
             logger.exception('Failed to record Telegram update_id=%s in redis dedupe cache', update_id)
 
-    return await telegram_update_deduper.mark_if_new(dedupe_key, ttl_seconds)
+    return await telegram_update_deduper.mark_if_new(str(update_id), ttl_seconds)
 
 
 @asynccontextmanager
@@ -1566,7 +1565,6 @@ async def _publish_task_with_recovery(
 
 @app.post('/telegram/webhook')
 async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
-    REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
     repo = CoreRepository(db)
     update_id_raw = payload.get('update_id')
     try:
@@ -1576,8 +1574,10 @@ async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) ->
     if update_id > 0:
         should_process = await _register_telegram_update(update_id)
         if not should_process:
+            REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook_duplicate').inc()
             logger.info('Skipping duplicate telegram update update_id=%s', update_id)
             return {'ok': True, 'duplicate': True}
+    REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
 
     callback_query = payload.get('callback_query')
     if callback_query:
