@@ -19,7 +19,7 @@ Conflict resolution:
 - Core coordinator -> executor -> result loop
 - Task lifecycle tracking in DB with enforced legal transitions
 - `/status` and `/cancel` commands
-- Shell safety policy with approval gates for mutating commands
+- Shell safety policy with approval gates for mutating commands (for local shell execution paths)
 - Input sanitization and prompt-injection blocking
 - Conversation context assembly with bounded window (recent full + older summarized)
 - Conversation memory integration (local or mem0 backends)
@@ -29,6 +29,7 @@ Conflict resolution:
   - tenant-scoped invite issuance
   - tenant limits read/write
   - tenant health and recent failures visibility
+- Token budget alerts and soft guardrails (configurable per-tenant limits with graceful refusal and audit)
 - CI gates:
   - PR: fast smoke + safety-critical tests
   - full suite: nightly/release gate
@@ -48,8 +49,12 @@ Conflict resolution:
 - Full per-tenant namespace provisioning/mTLS stack
 
 ## Exit Criteria (Private Beta Ready)
-- All `beta_blocking` tests pass
-- No unresolved `safety_critical` failures
+- All tests marked `beta_blocking` pass
+- No unresolved failures in tests marked `safety_critical`
 - PR gate and full-suite gate are green
 - Smoke runbook succeeds end-to-end
 - Known gaps are only in Experimental or Post-Beta sections
+
+## Test Marker Standard
+- `beta_blocking`, `safety_critical`, and `mvp_smoke` are required pytest markers.
+- PR-02 establishes marker registration and CI gating behavior.
