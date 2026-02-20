@@ -94,6 +94,33 @@ SEARCH_INTENT_PHRASES = (
 )
 
 
+class _InMemoryUpdateDeduper:
+    def __init__(self) -> None:
+        self._expirations: dict[str, float] = {}
+        self._lock = asyncio.Lock()
+
+    async def mark_if_new(self, key: str, ttl_seconds: int) -> bool:
+        now = perf_counter()
+        expires_at = now + max(ttl_seconds, 1)
+        async with self._lock:
+            # This fallback path is only used if Redis is unavailable, so an O(n) sweep is acceptable.
+            expired = [entry for entry, expiry in self._expirations.items() if expiry <= now]
+            for entry in expired:
+                self._expirations.pop(entry, None)
+            existing = self._expirations.get(key)
+            if existing and existing > now:
+                return False
+            self._expirations[key] = expires_at
+            return True
+
+    async def clear(self) -> None:
+        async with self._lock:
+            self._expirations.clear()
+
+
+telegram_update_deduper = _InMemoryUpdateDeduper()
+
+
 def _chunk_telegram_text(text: str, max_len: int = MAX_TELEGRAM_MESSAGE_LEN) -> list[str]:
     if len(text) <= max_len:
         return [text]
@@ -156,6 +183,21 @@ async def _send_telegram_message(
         if parse_mode:
             payload['parse_mode'] = parse_mode
         await telegram.send_message(**payload)
+
+
+async def _register_telegram_update(update_id: int) -> bool:
+    ttl_seconds = max(30, int(settings.telegram_update_dedupe_ttl_seconds))
+    redis_key = f'agentai:telegram:update:{update_id}'
+    redis_client = getattr(bus, 'redis', None)
+    if redis_client is not None:
+        try:
+            created = await redis_client.set(redis_key, '1', ex=ttl_seconds, nx=True)
+            return bool(created)
+        except Exception:
+            # Degrades to per-process dedupe only; cross-process dedupe requires Redis.
+            logger.exception('Failed to record Telegram update_id=%s in redis dedupe cache', update_id)
+
+    return await telegram_update_deduper.mark_if_new(str(update_id), ttl_seconds)
 
 
 @asynccontextmanager
@@ -740,6 +782,7 @@ async def lifespan(app: FastAPI):
         repo = CoreRepository(db)
         await repo.get_or_create_default_tenant_user()
         await db.commit()
+    await telegram_update_deduper.clear()
 
     result_task = asyncio.create_task(_consume_results_forever())
     app.state.result_task = result_task
@@ -1522,8 +1565,19 @@ async def _publish_task_with_recovery(
 
 @app.post('/telegram/webhook')
 async def telegram_webhook(payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
-    REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
     repo = CoreRepository(db)
+    update_id_raw = payload.get('update_id')
+    try:
+        update_id = int(update_id_raw)
+    except (TypeError, ValueError):
+        update_id = 0
+    if update_id > 0:
+        should_process = await _register_telegram_update(update_id)
+        if not should_process:
+            REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook_duplicate').inc()
+            logger.info('Skipping duplicate telegram update update_id=%s', update_id)
+            return {'ok': True, 'duplicate': True}
+    REQUEST_COUNTER.labels(service='coordinator', endpoint='telegram_webhook').inc()
 
     callback_query = payload.get('callback_query')
     if callback_query:

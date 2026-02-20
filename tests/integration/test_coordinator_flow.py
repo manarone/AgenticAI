@@ -122,6 +122,50 @@ def test_start_and_direct_response(monkeypatch):
     assert any('mvp fallback response' in m['text'].lower() for m in sent_messages)
 
 
+def test_duplicate_telegram_update_id_is_ignored(monkeypatch):
+    from services.coordinator.main import app, llm, telegram, telegram_update_deduper
+
+    sent_messages = []
+    llm_calls = 0
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_chat_with_tools(**kwargs):
+        nonlocal llm_calls
+        llm_calls += 1
+        return LLMToolChatResult(text='single response', prompt_tokens=1, completion_tokens=1, tool_records=[])
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(llm, 'chat_with_tools', fake_chat_with_tools)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    asyncio.run(telegram_update_deduper.clear())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 1710}, 'chat': {'id': 1710}}},
+        )
+
+        duplicate_payload = {
+            'update_id': 910001,
+            'message': {
+                'text': 'hello once',
+                'from': {'id': 1710},
+                'chat': {'id': 1710},
+            },
+        }
+        first = client.post('/telegram/webhook', json=duplicate_payload)
+        second = client.post('/telegram/webhook', json=duplicate_payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json().get('duplicate') is True
+    assert llm_calls == 1
+    assert sum(1 for m in sent_messages if m['text'] == 'single response') == 1
+
+
 def test_new_command_starts_new_conversation(monkeypatch):
     from services.coordinator.main import app, telegram
 
@@ -450,6 +494,53 @@ def test_approval_callback_replay_does_not_reissue_shell_grant(monkeypatch):
     assert asyncio.run(_has_active_shell_grant(501)) is False
     assert sum(1 for m in sent_messages if 'approved and queued' in m['text'].lower()) == 1
     assert any('already processed' in text.lower() for text in callback_answers)
+
+
+def test_duplicate_callback_update_id_is_ignored(monkeypatch):
+    from services.coordinator.main import app, telegram, telegram_update_deduper
+
+    sent_messages = []
+    callback_answers = []
+
+    async def fake_send_message(chat_id, text, reply_markup=None, parse_mode=None):
+        sent_messages.append({'chat_id': str(chat_id), 'text': text, 'reply_markup': reply_markup})
+
+    async def fake_answer_callback_query(callback_query_id, text):
+        callback_answers.append(str(text))
+        return None
+
+    monkeypatch.setattr(telegram, 'send_message', fake_send_message)
+    monkeypatch.setattr(telegram, 'answer_callback_query', fake_answer_callback_query)
+
+    invite_code = asyncio.run(_prepare_invite_code())
+    asyncio.run(telegram_update_deduper.clear())
+
+    with TestClient(app) as client:
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': f'/start {invite_code}', 'from': {'id': 509}, 'chat': {'id': 509}}},
+        )
+        client.post(
+            '/telegram/webhook',
+            json={'message': {'text': 'shell: systemctl restart nginx', 'from': {'id': 509}, 'chat': {'id': 509}}},
+        )
+
+        approval_msgs = [m for m in sent_messages if m['reply_markup']]
+        assert approval_msgs
+        callback_data = approval_msgs[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        callback_payload = {
+            'update_id': 910777,
+            'callback_query': {'id': 'cb-dup-update', 'data': callback_data, 'from': {'id': 509}},
+        }
+
+        first = client.post('/telegram/webhook', json=callback_payload)
+        second = client.post('/telegram/webhook', json=callback_payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json().get('duplicate') is True
+    assert sum(1 for m in sent_messages if 'approved and queued' in m['text'].lower()) == 1
+    assert len(callback_answers) == 1
 
 
 def test_result_consumer_notifies_when_executor_already_set_terminal_status(monkeypatch):
