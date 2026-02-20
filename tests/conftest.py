@@ -43,9 +43,16 @@ def _assert_paths_exist(paths: tuple[str, ...], *, marker_name: str) -> None:
         raise RuntimeError(f'Marker path configuration for {marker_name} references missing tests: {missing}')
 
 
+def _assert_prefix_dirs_exist(prefixes: tuple[str, ...], *, marker_name: str) -> None:
+    missing = [prefix for prefix in prefixes if not Path(prefix).is_dir()]
+    if missing:
+        raise RuntimeError(f'Marker prefix configuration for {marker_name} references missing directories: {missing}')
+
+
 _assert_paths_exist(_MVP_SMOKE_TEST_PATHS, marker_name='mvp_smoke')
 _assert_paths_exist(_SAFETY_CRITICAL_TEST_PATHS, marker_name='safety_critical')
 _assert_paths_exist(_BETA_BLOCKING_TEST_PATHS, marker_name='beta_blocking')
+_assert_prefix_dirs_exist(_BETA_BLOCKING_TEST_PATH_PREFIXES, marker_name='beta_blocking')
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
