@@ -1,0 +1,39 @@
+name: Deploy Coolify
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deployment config
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_API_BASE: ${{ vars.COOLIFY_API_BASE }}
+          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+        run: |
+          missing=0
+          [ -z "$COOLIFY_TOKEN" ] && echo "::error::Missing secret COOLIFY_TOKEN" && missing=1
+          [ -z "$COOLIFY_API_BASE" ] && echo "::error::Missing variable COOLIFY_API_BASE" && missing=1
+          [ -z "$COOLIFY_APP_UUID" ] && echo "::error::Missing variable COOLIFY_APP_UUID" && missing=1
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Trigger Coolify deployment
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_API_BASE: ${{ vars.COOLIFY_API_BASE }}
+          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            --request GET "${COOLIFY_API_BASE}/deploy?uuid=${COOLIFY_APP_UUID}&force=false" \
+            --header "Authorization: Bearer ${COOLIFY_TOKEN}"

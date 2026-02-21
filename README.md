@@ -3,3 +3,13 @@
 # AgenticAI
 
 Project repository for AgenticAI.
+
+## CI/CD
+
+This repo is configured to deploy to Coolify after CI passes on `main`.
+
+Required GitHub configuration:
+
+- Repository variable `COOLIFY_API_BASE` (example: `http://10.100.0.7:8000/api/v1`)
+- Repository variable `COOLIFY_APP_UUID` (Coolify app UUID)
+- Repository secret `COOLIFY_TOKEN` (Coolify API token)
