@@ -20,6 +20,10 @@ src/agenticai/
     routes/
   bus/
   core/
+  db/
+alembic/
+  versions/
+alembic.ini
 tests/
 Containerfile
 pyproject.toml
@@ -32,6 +36,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
+alembic upgrade head
 uvicorn agenticai.main:app --app-dir src --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -40,6 +45,18 @@ Run checks:
 ```bash
 ruff check .
 pytest
+```
+
+## Database and migrations
+
+Track A foundation schema is managed with Alembic.
+
+```bash
+# Apply baseline schema
+alembic upgrade head
+
+# Roll back one revision
+alembic downgrade -1
 ```
 
 ## API status
