@@ -10,6 +10,7 @@ from agenticai.api.router import api_router
 from agenticai.bus.factory import create_bus
 from agenticai.core.config import get_settings
 from agenticai.core.logging import configure_logging
+from agenticai.db.session import build_engine, build_session_factory
 
 logger = logging.getLogger(__name__)
 RESOURCE_CLOSE_TIMEOUT_SECONDS = 5
@@ -47,11 +48,21 @@ def create_app() -> FastAPI:
         """Initialize and clean up application resources."""
         app.state.settings = settings
         app.state.bus = create_bus(settings)
+        app.state.db_engine = build_engine(settings.database_url.get_secret_value())
+        app.state.db_session_factory = build_session_factory(app.state.db_engine)
         yield
         bus = getattr(app.state, "bus", None)
         if bus is not None:
             await _close_resource(bus)
         app.state.bus = None
+        engine = getattr(app.state, "db_engine", None)
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:
+                logger.exception("Failed to dispose database engine")
+        app.state.db_engine = None
+        app.state.db_session_factory = None
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(api_router)

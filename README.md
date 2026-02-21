@@ -67,6 +67,8 @@ Current scaffold endpoints:
 - `GET /readyz`
 - `GET /v1/tasks`
 - `POST /v1/tasks`
+- `GET /v1/tasks/{task_id}`
+- `POST /v1/tasks/{task_id}/cancel`
 
 ## Deployment notes
 
