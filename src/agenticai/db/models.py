@@ -1,7 +1,7 @@
 """Core relational models for the foundation track."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import uuid4
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from agenticai.db.base import Base
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Lifecycle states for a task record."""
 
     QUEUED = "QUEUED"
@@ -27,7 +27,11 @@ class Organization(Base):
 
     __tablename__ = "organizations"
 
-    id: Mapped[str] = mapped_column(String(length=36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(length=36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
     slug: Mapped[str] = mapped_column(String(length=64), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(length=128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -36,8 +40,14 @@ class Organization(Base):
         server_default=func.now(),
     )
 
-    users: Mapped[list["User"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
-    tasks: Mapped[list["Task"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
+    users: Mapped[list["User"]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+    tasks: Mapped[list["Task"]] = relationship(
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
 
 
 class User(Base):
@@ -48,7 +58,11 @@ class User(Base):
         UniqueConstraint("org_id", "telegram_user_id", name="uq_users_org_telegram_user_id"),
     )
 
-    id: Mapped[str] = mapped_column(String(length=36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(length=36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
     org_id: Mapped[str] = mapped_column(
         String(length=36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -76,7 +90,11 @@ class Task(Base):
         Index("ix_tasks_created_at", "created_at"),
     )
 
-    id: Mapped[str] = mapped_column(String(length=36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[str] = mapped_column(
+        String(length=36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
     org_id: Mapped[str] = mapped_column(
         String(length=36),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -89,7 +107,11 @@ class Task(Base):
         nullable=False,
         index=True,
     )
-    status: Mapped[str] = mapped_column(String(length=32), nullable=False, default=TaskStatus.QUEUED.value)
+    status: Mapped[str] = mapped_column(
+        String(length=32),
+        nullable=False,
+        default=TaskStatus.QUEUED.value,
+    )
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

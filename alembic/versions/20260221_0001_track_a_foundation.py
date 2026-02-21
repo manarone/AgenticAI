@@ -1,16 +1,16 @@
 """Track A step 2: baseline relational schema."""
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260221_0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -70,7 +70,10 @@ def upgrade() -> None:
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT')",
+            (
+                "status IN ('QUEUED', 'RUNNING', 'WAITING_APPROVAL', "
+                "'SUCCEEDED', 'FAILED', 'CANCELED', 'TIMED_OUT')"
+            ),
             name="ck_tasks_status",
         ),
         sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
@@ -80,7 +83,12 @@ def upgrade() -> None:
 
     op.create_index("ix_users_org_id", "users", ["org_id"], unique=False)
     op.create_index("ix_tasks_org_id", "tasks", ["org_id"], unique=False)
-    op.create_index("ix_tasks_requested_by_user_id", "tasks", ["requested_by_user_id"], unique=False)
+    op.create_index(
+        "ix_tasks_requested_by_user_id",
+        "tasks",
+        ["requested_by_user_id"],
+        unique=False,
+    )
     op.create_index("ix_tasks_org_status", "tasks", ["org_id", "status"], unique=False)
     op.create_index("ix_tasks_created_at", "tasks", ["created_at"], unique=False)
 
