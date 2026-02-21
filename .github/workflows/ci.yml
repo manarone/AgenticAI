@@ -44,27 +44,19 @@ jobs:
         env:
           COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-          COOLIFY_APP_UUID: ${{ vars.COOLIFY_APP_UUID }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ] || [ -z "${COOLIFY_APP_UUID}" ]; then
-            echo "::error::Missing deploy configuration. Required: COOLIFY_WEBHOOK (secret), COOLIFY_TOKEN (secret), COOLIFY_APP_UUID (repo variable)."
+            echo "::error::Missing deploy configuration. Required: COOLIFY_WEBHOOK, COOLIFY_TOKEN, COOLIFY_APP_UUID (all repository secrets)."
             exit 1
           fi
 
           curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \
             --header "Authorization: Bearer ${COOLIFY_TOKEN}"
 
-          COOLIFY_API_BASE="$(python3 - <<'PY'
-from urllib.parse import urlparse
-import os
-parsed = urlparse(os.environ["COOLIFY_WEBHOOK"])
-print(f"{parsed.scheme}://{parsed.netloc}/api/v1")
-PY
-)"
-
           python3 .github/scripts/verify_coolify_deployment.py \
-            --api-base "${COOLIFY_API_BASE}" \
+            --webhook "${COOLIFY_WEBHOOK}" \
             --token "${COOLIFY_TOKEN}" \
             --app-uuid "${COOLIFY_APP_UUID}" \
             --commit "${GITHUB_SHA}" \

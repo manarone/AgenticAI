@@ -65,7 +65,7 @@ Required GitHub repository secrets:
 
 - `COOLIFY_WEBHOOK`: Coolify deploy webhook URL for `agenticai-dev`
 - `COOLIFY_TOKEN`: Coolify API token used in the `Authorization: Bearer` header
-- `COOLIFY_APP_UUID` (repository variable): Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`)
+- `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`)
 
 Recommended:
 

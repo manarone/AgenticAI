@@ -8,6 +8,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SUCCESS_STATUSES = {"success", "succeeded", "completed", "finished", "done", "deployed"}
@@ -53,7 +54,8 @@ def _find_deployment(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api-base", required=True)
+    parser.add_argument("--api-base")
+    parser.add_argument("--webhook")
     parser.add_argument("--token", required=True)
     parser.add_argument("--app-uuid", required=True)
     parser.add_argument("--commit", required=True)
@@ -62,7 +64,19 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
 
-    api_base = args.api_base.rstrip("/")
+    if bool(args.api_base) == bool(args.webhook):
+        print("::error::Provide exactly one of --api-base or --webhook.")
+        return 1
+
+    if args.api_base:
+        api_base = args.api_base.rstrip("/")
+    else:
+        parsed = urllib.parse.urlparse(args.webhook)
+        if not parsed.scheme or not parsed.netloc:
+            print("::error::Invalid webhook URL provided.")
+            return 1
+        api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1"
+
     start = time.time()
 
     print(f"Waiting {args.initial_wait}s before polling Coolify deployments...")
