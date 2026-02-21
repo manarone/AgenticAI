@@ -6,3 +6,14 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+
+chat:
+  integrations:
+    jira:
+      usage: disabled
+    linear:
+      usage: disabled
+
+issue_enrichment:
+  auto_enrich:
+    enabled: true
