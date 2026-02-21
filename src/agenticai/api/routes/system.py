@@ -1,10 +1,19 @@
 import inspect
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, status
+from fastapi.responses import JSONResponse
 
 from agenticai.core.config import get_settings
 
 router = APIRouter(tags=["system"])
+
+
+def _not_ready_response(bus_backend: str) -> JSONResponse:
+    """Return a 503 response for readiness failures."""
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"status": "not_ready", "bus_backend": bus_backend},
+    )
 
 
 @router.get("/healthz")
@@ -14,7 +23,7 @@ def healthz() -> dict[str, str]:
 
 
 @router.get("/readyz")
-async def readyz(request: Request) -> dict[str, str]:
+async def readyz(request: Request) -> JSONResponse:
     """Readiness probe that checks app state and bus availability."""
     settings = getattr(request.app.state, "settings", None)
     if settings is None:
@@ -22,7 +31,7 @@ async def readyz(request: Request) -> dict[str, str]:
 
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
-        return {"status": "not_ready", "bus_backend": settings.bus_backend}
+        return _not_ready_response(settings.bus_backend)
 
     ping = getattr(bus, "ping", None)
     if callable(ping):
@@ -31,8 +40,11 @@ async def readyz(request: Request) -> dict[str, str]:
             if inspect.isawaitable(ping_result):
                 ping_result = await ping_result
             if ping_result is False:
-                return {"status": "not_ready", "bus_backend": settings.bus_backend}
+                return _not_ready_response(settings.bus_backend)
         except Exception:
-            return {"status": "not_ready", "bus_backend": settings.bus_backend}
+            return _not_ready_response(settings.bus_backend)
 
-    return {"status": "ready", "bus_backend": settings.bus_backend}
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"status": "ready", "bus_backend": settings.bus_backend},
+    )

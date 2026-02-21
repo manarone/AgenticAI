@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 from collections.abc import AsyncIterator
@@ -11,6 +12,7 @@ from agenticai.core.config import get_settings
 from agenticai.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
+RESOURCE_CLOSE_TIMEOUT_SECONDS = 5
 
 
 async def _close_resource(resource: object) -> None:
@@ -23,7 +25,13 @@ async def _close_resource(resource: object) -> None:
         try:
             result = method()
             if inspect.isawaitable(result):
-                await result
+                await asyncio.wait_for(result, timeout=RESOURCE_CLOSE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "Timed out closing resource via '%s' after %s seconds",
+                method_name,
+                RESOURCE_CLOSE_TIMEOUT_SECONDS,
+            )
         except Exception:
             logger.exception("Failed to close resource via '%s'", method_name)
         return
@@ -36,6 +44,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Initialize and clean up application resources."""
         app.state.settings = settings
         app.state.bus = create_bus(settings)
         yield

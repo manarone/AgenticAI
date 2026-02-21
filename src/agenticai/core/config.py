@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,15 +11,16 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
-    app_name: str = Field(default="AgenticAI", alias="APP_NAME")
-    environment: str = Field(default="development", alias="ENVIRONMENT")
-    host: str = Field(default="0.0.0.0", alias="HOST")
-    port: int = Field(default=8000, alias="PORT")
-    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
-    bus_backend: str = Field(default="inmemory", alias="BUS_BACKEND")
-    redis_url: str | None = Field(default=None, alias="REDIS_URL")
+    app_name: str = Field(default="AgenticAI", validation_alias="APP_NAME")
+    environment: str = Field(default="development", validation_alias="ENVIRONMENT")
+    host: str = Field(default="0.0.0.0", validation_alias="HOST")
+    port: int = Field(default=8000, validation_alias="PORT")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
+    redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
 
     @field_validator("bus_backend", mode="before")
     @classmethod
@@ -36,6 +39,7 @@ class Settings(BaseSettings):
         return self
 
 
+@lru_cache
 def get_settings() -> Settings:
     """Build settings from environment variables."""
     return Settings()

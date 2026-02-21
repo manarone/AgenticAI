@@ -7,6 +7,7 @@ class InMemoryBus(EventBus):
     """Simple queue-backed bus for local/dev usage."""
 
     def __init__(self) -> None:
+        """Initialize per-topic in-memory queues."""
         self._topics: dict[str, deque[dict[str, object]]] = defaultdict(deque)
 
     def publish(self, topic: str, payload: dict[str, object]) -> None:
