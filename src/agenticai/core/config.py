@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
     redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
-    database_url: str = Field(
+    database_url: SecretStr = Field(
         default="sqlite:///./agenticai.db",
         validation_alias="DATABASE_URL",
     )
