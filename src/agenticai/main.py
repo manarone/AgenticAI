@@ -57,7 +57,10 @@ def create_app() -> FastAPI:
         app.state.bus = None
         engine = getattr(app.state, "db_engine", None)
         if engine is not None:
-            await _close_resource(engine)
+            try:
+                engine.dispose()
+            except Exception:
+                logger.exception("Failed to dispose database engine")
         app.state.db_engine = None
         app.state.db_session_factory = None
 
