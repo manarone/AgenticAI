@@ -73,6 +73,7 @@ Current scaffold endpoints:
 - Container entrypoint serves on port `8000`
 - Set `BUS_BACKEND=inmemory` unless Redis bus is wired
 - Health check path: `/healthz`
+- Run `alembic upgrade head` against the target database before restarting or rolling out.
 
 ### Coolify + GitHub Actions
 
