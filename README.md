@@ -65,7 +65,7 @@ Required GitHub repository secrets:
 
 - `COOLIFY_WEBHOOK`: Coolify deploy webhook URL for `agenticai-dev`
 - `COOLIFY_TOKEN`: Coolify API token used in the `Authorization: Bearer` header
-- `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`)
+- `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`) (can be a repository variable instead)
 
 Recommended:
 
@@ -73,3 +73,4 @@ Recommended:
 - If you deploy via this workflow, disable overlapping auto-deploy triggers in Coolify to avoid double deployments.
 - The deploy job now validates the real Coolify deployment result (not just webhook success) by polling deployments for the current commit.
 - The container image includes `curl` so Coolify health checks can run for Dockerfile-based deploys.
+- If deploy credentials are not configured, the deploy job exits with a warning and skips verification instead of failing unrelated CI checks.
