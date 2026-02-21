@@ -1,19 +1,54 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches:
       - main
+      - codex/**
+  pull_request:
 
 jobs:
-  repo-sanity:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Basic sanity checks
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "**/pyproject.toml"
+
+      - name: Install dependencies
         run: |
-          test -f README.md
-          test -f .coderabbit.yaml
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test
+        run: pytest
+
+  deploy-coolify:
+    name: Deploy to Coolify
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Coolify deploy webhook
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ]; then
+            echo "::warning::Skipping deploy. Set COOLIFY_WEBHOOK and COOLIFY_TOKEN repository secrets."
+            exit 0
+          fi
+
+          curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \
+            --header "Authorization: Bearer ${COOLIFY_TOKEN}"
