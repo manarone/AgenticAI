@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
     redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
+    database_url: str = Field(
+        default="sqlite:///./agenticai.db",
+        validation_alias="DATABASE_URL",
+    )
 
     @field_validator("bus_backend", mode="before")
     @classmethod
