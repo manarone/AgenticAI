@@ -44,11 +44,22 @@ jobs:
         env:
           COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ]; then
-            echo "::warning::Skipping deploy. Set COOLIFY_WEBHOOK and COOLIFY_TOKEN repository secrets."
-            exit 0
+          if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ] || [ -z "${COOLIFY_APP_UUID}" ]; then
+            echo "::error::Missing deploy configuration. Required: COOLIFY_WEBHOOK, COOLIFY_TOKEN, COOLIFY_APP_UUID (all repository secrets)."
+            exit 1
           fi
 
           curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \
             --header "Authorization: Bearer ${COOLIFY_TOKEN}"
+
+          python3 .github/scripts/verify_coolify_deployment.py \
+            --webhook "${COOLIFY_WEBHOOK}" \
+            --token "${COOLIFY_TOKEN}" \
+            --app-uuid "${COOLIFY_APP_UUID}" \
+            --commit "${GITHUB_SHA}" \
+            --initial-wait 60 \
+            --poll-interval 30 \
+            --timeout 600

@@ -8,7 +8,10 @@ WORKDIR /app
 
 COPY pyproject.toml README.md /app/
 
-RUN pip install --upgrade pip && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --upgrade pip && \
     python -c "import subprocess, tomllib; d = tomllib.load(open('pyproject.toml', 'rb')); subprocess.check_call(['pip', 'install', *d.get('project', {}).get('dependencies', [])])"
 
 COPY src /app/src
