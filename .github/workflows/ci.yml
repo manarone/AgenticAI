@@ -29,3 +29,22 @@ jobs:
 
       - name: Test
         run: pytest
+
+  deploy-coolify:
+    name: Deploy to Coolify
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Coolify deploy webhook
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ]; then
+            echo "::warning::Skipping deploy. Set COOLIFY_WEBHOOK and COOLIFY_TOKEN repository secrets."
+            exit 0
+          fi
+
+          curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \
+            --header "Authorization: Bearer ${COOLIFY_TOKEN}"

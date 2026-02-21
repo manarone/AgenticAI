@@ -56,3 +56,17 @@ Current scaffold endpoints:
 - Container entrypoint serves on port `8000`
 - Set `BUS_BACKEND=inmemory` unless Redis bus is wired
 - Health check path: `/healthz`
+
+### Coolify + GitHub Actions
+
+`CI` now triggers deployment to Coolify after tests pass on `main`.
+
+Required GitHub repository secrets:
+
+- `COOLIFY_WEBHOOK`: Coolify deploy webhook URL for `agenticai-dev`
+- `COOLIFY_TOKEN`: Coolify API token used in the `Authorization: Bearer` header
+
+Recommended:
+
+- Keep `BUS_BACKEND=inmemory` in Coolify env vars unless Redis is configured.
+- If you deploy via this workflow, disable overlapping auto-deploy triggers in Coolify to avoid double deployments.
