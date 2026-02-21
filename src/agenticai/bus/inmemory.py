@@ -10,10 +10,16 @@ class InMemoryBus(EventBus):
         self._topics: dict[str, deque[dict[str, object]]] = defaultdict(deque)
 
     def publish(self, topic: str, payload: dict[str, object]) -> None:
+        """Enqueue a message for a topic."""
         self._topics[topic].append(payload)
 
     def drain(self, topic: str) -> list[dict[str, object]]:
+        """Drain all queued messages for one topic."""
         queue = self._topics[topic]
         messages = list(queue)
         queue.clear()
         return messages
+
+    def ping(self) -> bool:
+        """In-memory bus is healthy if object exists."""
+        return True

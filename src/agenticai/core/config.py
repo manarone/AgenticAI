@@ -1,10 +1,10 @@
-from functools import lru_cache
-
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -19,19 +19,23 @@ class Settings(BaseSettings):
     bus_backend: str = Field(default="inmemory", alias="BUS_BACKEND")
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
 
+    @field_validator("bus_backend", mode="before")
+    @classmethod
+    def normalize_bus_backend(cls, value: str) -> str:
+        """Normalize BUS_BACKEND to lowercase for stable comparisons."""
+        return str(value).lower()
+
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
-        backend = self.bus_backend.lower()
-        if backend not in {"inmemory", "redis"}:
-            raise ValueError("BUS_BACKEND must be one of: inmemory, redis")
+        """Validate backend compatibility for the current scaffold."""
+        if self.bus_backend != "inmemory":
+            raise ValueError(
+                "BUS_BACKEND must be 'inmemory' for now; redis backend is not implemented yet"
+            )
 
-        if backend == "redis" and not self.redis_url:
-            raise ValueError("REDIS_URL is required when BUS_BACKEND=redis")
-
-        self.bus_backend = backend
         return self
 
 
-@lru_cache
 def get_settings() -> Settings:
+    """Build settings from environment variables."""
     return Settings()

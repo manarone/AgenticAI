@@ -1,7 +1,16 @@
+import logging
 import logging.config
+
+_ALLOWED_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 
 
 def configure_logging(level: str) -> None:
+    """Configure process-wide logging for the API service."""
+    normalized_level = level.upper()
+    if normalized_level not in _ALLOWED_LEVELS:
+        allowed = ", ".join(sorted(_ALLOWED_LEVELS))
+        raise ValueError(f"Invalid LOG_LEVEL '{level}'. Expected one of: {allowed}")
+
     logging.config.dictConfig(
         {
             "version": 1,
@@ -15,10 +24,11 @@ def configure_logging(level: str) -> None:
                 "console": {
                     "class": "logging.StreamHandler",
                     "formatter": "default",
+                    "stream": "ext://sys.stdout",
                 }
             },
             "root": {
-                "level": level.upper(),
+                "level": normalized_level,
                 "handlers": ["console"],
             },
         }
