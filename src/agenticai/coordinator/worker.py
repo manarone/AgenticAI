@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from typing import Protocol
 from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.bus.base import TASK_QUEUE, EventBus, QueuedMessage
+from agenticai.core.observability import log_event
 from agenticai.db.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,14 @@ class CoordinatorWorker:
             logger.exception("Failed to dequeue messages from queue '%s'", TASK_QUEUE)
             return 0
 
+        if messages:
+            log_event(
+                logger,
+                event="queue.tasks.dequeued",
+                queue=TASK_QUEUE,
+                count=len(messages),
+            )
+
         processed_count = 0
         for message in messages:
             try:
@@ -137,9 +147,12 @@ class CoordinatorWorker:
         payload = message.get("payload", {})
         raw_task_id = payload.get("task_id")
         if not isinstance(raw_task_id, str) or not raw_task_id:
-            logger.warning(
-                "Ignoring queue message with invalid task_id payload: %s",
-                message,
+            log_event(
+                logger,
+                level=logging.WARNING,
+                event="queue.tasks.invalid_message",
+                queue=TASK_QUEUE,
+                message=message,
             )
             return
 
@@ -147,6 +160,7 @@ class CoordinatorWorker:
         if handoff is None:
             return
 
+        execution_started_at = time.perf_counter()
         try:
             result = await self._execute_handoff(handoff)
         except Exception:
@@ -155,6 +169,15 @@ class CoordinatorWorker:
                 success=False,
                 error_message="Planner/executor handoff failed",
             )
+        duration_ms = round((time.perf_counter() - execution_started_at) * 1000, 2)
+        log_event(
+            logger,
+            event="task.execution.completed",
+            task_id=handoff.task_id,
+            success=result.success,
+            duration_ms=duration_ms,
+            error_message=result.error_message,
+        )
 
         await asyncio.to_thread(self._finalize_task, handoff.task_id, result)
 
@@ -175,9 +198,21 @@ class CoordinatorWorker:
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
-                logger.warning("Skipping queue message for unknown task_id=%s", task_id)
+                log_event(
+                    logger,
+                    level=logging.WARNING,
+                    event="task.lifecycle.unknown_task",
+                    task_id=task_id,
+                )
                 return None
             if task.status != TaskStatus.QUEUED.value:
+                log_event(
+                    logger,
+                    level=logging.DEBUG,
+                    event="task.lifecycle.skip_nonqueued",
+                    task_id=task.id,
+                    status=task.status,
+                )
                 return None
             org_id = task.org_id
             requested_by_user_id = task.requested_by_user_id
@@ -190,6 +225,13 @@ class CoordinatorWorker:
             task.error_message = None
             session.add(task)
             session.commit()
+            log_event(
+                logger,
+                event="task.lifecycle.transition",
+                task_id=task.id,
+                from_status=TaskStatus.QUEUED.value,
+                to_status=TaskStatus.RUNNING.value,
+            )
 
             return PlannerExecutorHandoff(
                 task_id=task.id,
@@ -202,16 +244,44 @@ class CoordinatorWorker:
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
+                log_event(
+                    logger,
+                    level=logging.WARNING,
+                    event="task.lifecycle.finalize_missing_task",
+                    task_id=task_id,
+                )
                 return
             if task.status == TaskStatus.CANCELED.value:
+                log_event(
+                    logger,
+                    event="task.lifecycle.finalize_skipped_canceled",
+                    task_id=task.id,
+                    status=task.status,
+                )
                 return
             if task.status != TaskStatus.RUNNING.value:
+                log_event(
+                    logger,
+                    level=logging.DEBUG,
+                    event="task.lifecycle.finalize_skipped_nonrunning",
+                    task_id=task.id,
+                    status=task.status,
+                )
                 return
 
             now = datetime.now(UTC)
-            task.status = TaskStatus.SUCCEEDED.value if result.success else TaskStatus.FAILED.value
+            final_status = TaskStatus.SUCCEEDED.value if result.success else TaskStatus.FAILED.value
+            task.status = final_status
             task.error_message = None if result.success else result.error_message
             task.completed_at = now
             task.updated_at = now
             session.add(task)
             session.commit()
+            log_event(
+                logger,
+                event="task.lifecycle.transition",
+                task_id=task.id,
+                from_status=TaskStatus.RUNNING.value,
+                to_status=final_status,
+                error_message=task.error_message,
+            )

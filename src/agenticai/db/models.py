@@ -41,6 +41,27 @@ class TelegramWebhookOutcome(StrEnum):
     IGNORED = "IGNORED"
 
 
+class RuntimeSetting(Base):
+    """Mutable runtime configuration seeded via migrations."""
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(length=128), primary_key=True)
+    value: Mapped[str] = mapped_column(String(length=256), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(length=255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class Organization(Base):
     """Organization tenant for a dedicated deployment."""
 

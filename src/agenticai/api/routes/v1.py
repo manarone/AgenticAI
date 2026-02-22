@@ -16,6 +16,7 @@ from agenticai.api.schemas.tasks import (
     TaskResponse,
 )
 from agenticai.bus.base import TASK_QUEUE, EventBus
+from agenticai.core.observability import log_event
 from agenticai.db.models import Task, TaskStatus
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -109,8 +110,16 @@ def create_task(
             message="org_id or requested_by_user_id does not exist",
         )
     db.refresh(task)
+    log_event(
+        logger,
+        event="task.lifecycle.created",
+        task_id=task.id,
+        org_id=task.org_id,
+        requested_by_user_id=task.requested_by_user_id,
+        status=task.status,
+    )
     try:
-        bus.enqueue(
+        accepted = bus.enqueue(
             TASK_QUEUE,
             task.id,
             {
@@ -121,6 +130,10 @@ def create_task(
             },
         )
     except Exception:
+        accepted = False
+        logger.exception("Failed to enqueue task %s", task.id)
+
+    if not accepted:
         failure_time = datetime.now(UTC)
         task.status = TaskStatus.FAILED.value
         task.error_message = "Queue backend unavailable during enqueue"
@@ -128,12 +141,25 @@ def create_task(
         task.updated_at = failure_time
         db.add(task)
         db.commit()
-        logger.exception("Failed to enqueue task %s", task.id)
+        log_event(
+            logger,
+            event="task.lifecycle.enqueue_failed",
+            task_id=task.id,
+            queue=TASK_QUEUE,
+            final_status=task.status,
+        )
         return _error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="TASK_QUEUE_UNAVAILABLE",
             message="Task enqueue failed because the queue backend is unavailable",
         )
+    log_event(
+        logger,
+        event="task.lifecycle.enqueued",
+        task_id=task.id,
+        queue=TASK_QUEUE,
+        status=task.status,
+    )
     return _task_response(task)
 
 
@@ -194,4 +220,10 @@ def cancel_task(
     db.add(task)
     db.commit()
     db.refresh(task)
+    log_event(
+        logger,
+        event="task.lifecycle.canceled",
+        task_id=task.id,
+        status=task.status,
+    )
     return _task_response(task)

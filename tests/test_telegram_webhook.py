@@ -149,3 +149,30 @@ def test_webhook_unknown_user_without_invite_requires_registration(client) -> No
 
     queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
     assert queued_messages == []
+
+
+def test_webhook_returns_503_when_queue_unavailable(client) -> None:
+    """Webhook returns a typed 503 and persists failed status when enqueue fails."""
+
+    def broken_enqueue(_queue: str, _job_id: str, _payload: dict[str, object]) -> bool:
+        raise RuntimeError("queue backend unavailable")
+
+    client.app.state.bus.enqueue = broken_enqueue
+    response = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=_message_update(update_id=5001, telegram_user_id=123456789, text="do work"),
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "TASK_QUEUE_UNAVAILABLE",
+            "message": "Task enqueue failed because the queue backend is unavailable",
+        }
+    }
+
+    with Session(bind=client.app.state.db_engine) as session:
+        task = session.execute(select(Task).where(Task.prompt == "do work")).scalar_one()
+    assert task.status == "FAILED"
+    assert task.error_message == "Queue backend unavailable during enqueue"
+    assert task.completed_at is not None

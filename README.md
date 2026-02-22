@@ -59,6 +59,8 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
+Latest migration seeds `runtime_settings.bus.redis_fallback_to_inmemory=true` so Redis startup fallback can be managed with persistent config and env overrides.
+
 ## API status
 
 Current scaffold endpoints:
@@ -76,6 +78,7 @@ Current scaffold endpoints:
 - Container entrypoint serves on port `8000`
 - Supported queue backends: `inmemory` (default) and `redis`
 - Set `BUS_BACKEND=redis` and `REDIS_URL=redis://host:6379/0` to enable Redis queues
+- `BUS_REDIS_FALLBACK_TO_INMEMORY` controls whether startup falls back to `inmemory` if Redis is unavailable (default `true`)
 - Coordinator worker runs in-process and consumes the `tasks` queue in the background
 - Optional coordinator tuning:
   - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)

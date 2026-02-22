@@ -11,6 +11,7 @@ from agenticai.bus.factory import create_bus
 from agenticai.coordinator import CoordinatorWorker, PlannerExecutorAdapter
 from agenticai.core.config import get_settings
 from agenticai.core.logging import configure_logging
+from agenticai.db.runtime_settings import read_bus_redis_fallback_override
 from agenticai.db.session import build_engine, build_session_factory
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,13 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Initialize and clean up application resources."""
         app.state.settings = settings
-        app.state.bus = create_bus(settings)
         app.state.db_engine = build_engine(settings.database_url.get_secret_value())
         app.state.db_session_factory = build_session_factory(app.state.db_engine)
+        redis_fallback_override = read_bus_redis_fallback_override(app.state.db_session_factory)
+        app.state.bus = create_bus(
+            settings,
+            redis_fallback_to_inmemory=redis_fallback_override,
+        )
         app.state.coordinator = None
         if start_coordinator:
             coordinator = CoordinatorWorker(
