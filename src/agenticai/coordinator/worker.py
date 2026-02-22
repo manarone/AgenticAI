@@ -192,9 +192,7 @@ class CoordinatorWorker:
                 return
 
             now = datetime.now(UTC)
-            task.status = (
-                TaskStatus.SUCCEEDED.value if result.success else TaskStatus.FAILED.value
-            )
+            task.status = TaskStatus.SUCCEEDED.value if result.success else TaskStatus.FAILED.value
             task.error_message = None if result.success else result.error_message
             task.completed_at = now
             task.updated_at = now
