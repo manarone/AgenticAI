@@ -121,11 +121,18 @@ def create_task(
             },
         )
     except Exception:
+        failure_time = datetime.now(UTC)
+        task.status = TaskStatus.FAILED.value
+        task.error_message = "Queue backend unavailable during enqueue"
+        task.completed_at = failure_time
+        task.updated_at = failure_time
+        db.add(task)
+        db.commit()
         logger.exception("Failed to enqueue task %s", task.id)
         return _error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="TASK_QUEUE_UNAVAILABLE",
-            message="Task was created but queue backend is currently unavailable",
+            message="Task enqueue failed because the queue backend is unavailable",
         )
     return _task_response(task)
 

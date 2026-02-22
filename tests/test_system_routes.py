@@ -95,9 +95,17 @@ def test_create_task_returns_503_when_queue_unavailable(client, seeded_identity)
     assert response.json() == {
         "error": {
             "code": "TASK_QUEUE_UNAVAILABLE",
-            "message": "Task was created but queue backend is currently unavailable",
+            "message": "Task enqueue failed because the queue backend is unavailable",
         }
     }
+    tasks_response = client.get("/v1/tasks")
+    assert tasks_response.status_code == 200
+    assert tasks_response.json()["count"] == 1
+    assert tasks_response.json()["items"][0]["status"] == "FAILED"
+    assert (
+        tasks_response.json()["items"][0]["error_message"]
+        == "Queue backend unavailable during enqueue"
+    )
 
 
 def test_get_task(client, seeded_identity) -> None:

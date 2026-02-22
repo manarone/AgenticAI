@@ -1,8 +1,6 @@
-import hashlib
-import json
 from collections import defaultdict, deque
 
-from agenticai.bus.base import EventBus, QueuedMessage
+from agenticai.bus.base import EventBus, QueuedMessage, payload_job_id
 
 
 class InMemoryBus(EventBus):
@@ -43,16 +41,9 @@ class InMemoryBus(EventBus):
             messages.append(queue_items.popleft())
         return messages
 
-    @staticmethod
-    def _payload_job_id(topic: str, payload: dict[str, object]) -> str:
-        """Derive a deterministic job id for publish/drain compatibility."""
-        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(f"{topic}:{payload_json}".encode()).hexdigest()
-        return f"evt_{digest}"
-
     def publish(self, topic: str, payload: dict[str, object]) -> None:
         """Enqueue a message for a topic."""
-        self.enqueue(topic, self._payload_job_id(topic, payload), payload)
+        self.enqueue(topic, payload_job_id(topic, payload), payload)
 
     def drain(self, topic: str) -> list[dict[str, object]]:
         """Drain all queued messages for one topic."""

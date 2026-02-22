@@ -1,5 +1,5 @@
-import hashlib
 import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -7,7 +7,9 @@ from typing import Any
 from redis import Redis
 from redis.exceptions import RedisError
 
-from agenticai.bus.base import EventBus, QueuedMessage
+from agenticai.bus.base import EventBus, QueuedMessage, payload_job_id
+
+logger = logging.getLogger(__name__)
 
 
 class RedisBus(EventBus):
@@ -81,10 +83,18 @@ class RedisBus(EventBus):
 
         try:
             self._execute_with_retry(lambda: self._client.rpush(queue_key, job_id))
-        except Exception:
+        except Exception as enqueue_error:
             # Roll back the dedupe marker if enqueue never made it to the queue.
-            self._execute_with_retry(lambda: self._client.delete(job_key))
-            raise
+            try:
+                self._execute_with_retry(lambda: self._client.delete(job_key))
+            except Exception:
+                logger.warning(
+                    "Failed to clean up Redis dedupe marker for queue=%s job_id=%s",
+                    queue,
+                    job_id,
+                    exc_info=True,
+                )
+            raise enqueue_error
         return True
 
     def dequeue(self, queue: str, *, limit: int = 1) -> list[QueuedMessage]:
@@ -95,7 +105,9 @@ class RedisBus(EventBus):
         queue_key = self._queue_key(queue)
         messages: list[QueuedMessage] = []
         while len(messages) < limit:
-            job_id = self._execute_with_retry(lambda: self._client.lpop(queue_key))
+            job_id = self._execute_with_retry(
+                lambda queue_key=queue_key: self._client.lpop(queue_key)
+            )
             if job_id is None:
                 break
 
@@ -118,16 +130,9 @@ class RedisBus(EventBus):
             )
         return messages
 
-    @staticmethod
-    def _payload_job_id(topic: str, payload: dict[str, object]) -> str:
-        """Derive deterministic event ids for publish/drain compatibility."""
-        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(f"{topic}:{payload_json}".encode()).hexdigest()
-        return f"evt_{digest}"
-
     def publish(self, topic: str, payload: dict[str, object]) -> None:
         """Publish event payload through queue semantics."""
-        self.enqueue(topic, self._payload_job_id(topic, payload), payload)
+        self.enqueue(topic, payload_job_id(topic, payload), payload)
 
     def drain(self, topic: str) -> list[dict[str, object]]:
         """Drain all available queued events for one topic."""

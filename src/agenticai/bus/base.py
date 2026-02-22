@@ -1,3 +1,5 @@
+import hashlib
+import json
 from typing import Protocol, TypedDict
 
 TASK_QUEUE = "tasks"
@@ -8,6 +10,13 @@ class QueuedMessage(TypedDict):
 
     job_id: str
     payload: dict[str, object]
+
+
+def payload_job_id(topic: str, payload: dict[str, object]) -> str:
+    """Derive a deterministic job id for publish/drain compatibility."""
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(f"{topic}:{payload_json}".encode()).hexdigest()
+    return f"evt_{digest}"
 
 
 class EventBus(Protocol):

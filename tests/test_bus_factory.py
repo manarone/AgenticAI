@@ -1,3 +1,4 @@
+import pytest
 from pytest import MonkeyPatch
 
 from agenticai.bus.factory import create_bus
@@ -32,9 +33,6 @@ def test_settings_require_redis_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("BUS_BACKEND", "redis")
     monkeypatch.delenv("REDIS_URL", raising=False)
     get_settings.cache_clear()
-    try:
+    with pytest.raises(ValueError) as excinfo:
         Settings()
-    except ValueError as exc:
-        assert "REDIS_URL is required when BUS_BACKEND=redis" in str(exc)
-    else:
-        raise AssertionError("Expected redis URL validation failure")
+    assert "REDIS_URL is required when BUS_BACKEND=redis" in str(excinfo.value)
