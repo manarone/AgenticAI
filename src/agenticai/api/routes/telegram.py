@@ -15,6 +15,7 @@ from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
 from agenticai.bus.base import TASK_QUEUE
 from agenticai.core.config import get_settings
+from agenticai.core.observability import log_event
 from agenticai.db.models import (
     Organization,
     Task,
@@ -46,6 +47,7 @@ def _ack_status(outcome: str) -> str:
     """Convert persisted outcome enum into response status string."""
     mapping = {
         TelegramWebhookOutcome.TASK_ENQUEUED.value: "accepted",
+        TelegramWebhookOutcome.ENQUEUE_FAILED.value: "failed",
         TelegramWebhookOutcome.REGISTERED.value: "registered",
         TelegramWebhookOutcome.REGISTRATION_REQUIRED.value: "registration_required",
         TelegramWebhookOutcome.IGNORED.value: "ignored",
@@ -60,6 +62,26 @@ def _build_ack(event: TelegramWebhookEvent, *, duplicate: bool) -> TelegramWebho
         update_id=event.update_id,
         duplicate=duplicate,
         task_id=event.task_id,
+    )
+
+
+def _log_webhook_outcome(
+    *,
+    payload: TelegramUpdate,
+    outcome: str,
+    duplicate: bool,
+    telegram_user_id: int | None,
+    task_id: str | None,
+) -> None:
+    """Emit one structured webhook lifecycle event."""
+    log_event(
+        logger,
+        event="telegram.webhook.ack",
+        update_id=payload.update_id,
+        outcome=outcome,
+        duplicate=duplicate,
+        telegram_user_id=telegram_user_id,
+        task_id=task_id,
     )
 
 
@@ -168,7 +190,15 @@ def telegram_webhook(
         select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == payload.update_id)
     ).scalar_one_or_none()
     if existing_event is not None:
-        return _build_ack(existing_event, duplicate=True)
+        ack = _build_ack(existing_event, duplicate=True)
+        _log_webhook_outcome(
+            payload=payload,
+            outcome=ack.status,
+            duplicate=ack.duplicate,
+            telegram_user_id=existing_event.telegram_user_id,
+            task_id=existing_event.task_id,
+        )
+        return ack
 
     message = _message_from_update(payload)
     if message is None or message.from_user is None:
@@ -179,7 +209,15 @@ def telegram_webhook(
             message_text=None,
             outcome=TelegramWebhookOutcome.IGNORED,
         )
-        return _build_ack(event, duplicate=duplicate)
+        ack = _build_ack(event, duplicate=duplicate)
+        _log_webhook_outcome(
+            payload=payload,
+            outcome=ack.status,
+            duplicate=ack.duplicate,
+            telegram_user_id=event.telegram_user_id,
+            task_id=event.task_id,
+        )
+        return ack
 
     telegram_user_id = message.from_user.id
     message_text = message.text.strip() if message.text else None
@@ -222,9 +260,25 @@ def telegram_webhook(
                     )
                 ).scalar_one_or_none()
                 if existing_event is not None:
-                    return _build_ack(existing_event, duplicate=True)
+                    ack = _build_ack(existing_event, duplicate=True)
+                    _log_webhook_outcome(
+                        payload=payload,
+                        outcome=ack.status,
+                        duplicate=ack.duplicate,
+                        telegram_user_id=existing_event.telegram_user_id,
+                        task_id=existing_event.task_id,
+                    )
+                    return ack
                 raise
-            return _build_ack(event, duplicate=False)
+            ack = _build_ack(event, duplicate=False)
+            _log_webhook_outcome(
+                payload=payload,
+                outcome=ack.status,
+                duplicate=ack.duplicate,
+                telegram_user_id=event.telegram_user_id,
+                task_id=event.task_id,
+            )
+            return ack
 
     if user is None:
         event, duplicate = _store_event(
@@ -234,7 +288,15 @@ def telegram_webhook(
             message_text=message_text,
             outcome=TelegramWebhookOutcome.REGISTRATION_REQUIRED,
         )
-        return _build_ack(event, duplicate=duplicate)
+        ack = _build_ack(event, duplicate=duplicate)
+        _log_webhook_outcome(
+            payload=payload,
+            outcome=ack.status,
+            duplicate=ack.duplicate,
+            telegram_user_id=event.telegram_user_id,
+            task_id=event.task_id,
+        )
+        return ack
 
     if not message_text or message_text.startswith("/start"):
         event, duplicate = _store_event(
@@ -244,7 +306,15 @@ def telegram_webhook(
             message_text=message_text,
             outcome=TelegramWebhookOutcome.IGNORED,
         )
-        return _build_ack(event, duplicate=duplicate)
+        ack = _build_ack(event, duplicate=duplicate)
+        _log_webhook_outcome(
+            payload=payload,
+            outcome=ack.status,
+            duplicate=ack.duplicate,
+            telegram_user_id=event.telegram_user_id,
+            task_id=event.task_id,
+        )
+        return ack
 
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
@@ -282,20 +352,72 @@ def telegram_webhook(
             select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == payload.update_id)
         ).scalar_one_or_none()
         if existing_event is not None:
-            return _build_ack(existing_event, duplicate=True)
+            ack = _build_ack(existing_event, duplicate=True)
+            _log_webhook_outcome(
+                payload=payload,
+                outcome=ack.status,
+                duplicate=ack.duplicate,
+                telegram_user_id=existing_event.telegram_user_id,
+                task_id=existing_event.task_id,
+            )
+            return ack
         raise
 
-    bus.enqueue(
-        TASK_QUEUE,
-        task.id,
-        {
-            "task_id": task.id,
-            "org_id": task.org_id,
-            "requested_by_user_id": task.requested_by_user_id,
-            "status": task.status,
-            "source": "telegram",
-            "telegram_update_id": payload.update_id,
-        },
-    )
+    try:
+        accepted = bus.enqueue(
+            TASK_QUEUE,
+            task.id,
+            {
+                "task_id": task.id,
+                "org_id": task.org_id,
+                "requested_by_user_id": task.requested_by_user_id,
+                "status": task.status,
+                "source": "telegram",
+                "telegram_update_id": payload.update_id,
+            },
+        )
+    except Exception:
+        accepted = False
+        logger.exception("Failed to enqueue task %s from Telegram webhook", task.id)
 
-    return _build_ack(event, duplicate=False)
+    if not accepted:
+        failure_time = datetime.now(UTC)
+        task.status = TaskStatus.FAILED.value
+        task.error_message = "Queue backend unavailable during enqueue"
+        task.completed_at = failure_time
+        task.updated_at = failure_time
+        event.outcome = TelegramWebhookOutcome.ENQUEUE_FAILED.value
+        db.add(task)
+        db.add(event)
+        db.commit()
+        log_event(
+            logger,
+            event="telegram.webhook.enqueue_failed",
+            update_id=payload.update_id,
+            task_id=task.id,
+            telegram_user_id=telegram_user_id,
+            queue=TASK_QUEUE,
+        )
+        return _error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="TASK_QUEUE_UNAVAILABLE",
+            message="Task enqueue failed because the queue backend is unavailable",
+        )
+
+    log_event(
+        logger,
+        event="telegram.webhook.task_enqueued",
+        update_id=payload.update_id,
+        task_id=task.id,
+        telegram_user_id=telegram_user_id,
+        queue=TASK_QUEUE,
+    )
+    ack = _build_ack(event, duplicate=False)
+    _log_webhook_outcome(
+        payload=payload,
+        outcome=ack.status,
+        duplicate=ack.duplicate,
+        telegram_user_id=event.telegram_user_id,
+        task_id=event.task_id,
+    )
+    return ack

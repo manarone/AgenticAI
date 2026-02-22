@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, validation_alias="PORT")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
+    bus_redis_fallback_to_inmemory: bool = Field(
+        default=True,
+        validation_alias="BUS_REDIS_FALLBACK_TO_INMEMORY",
+    )
     coordinator_poll_interval_seconds: float = Field(
         default=0.1,
         validation_alias="COORDINATOR_POLL_INTERVAL_SECONDS",

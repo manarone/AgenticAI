@@ -21,6 +21,7 @@ def test_settings_allow_redis_when_url_is_provided(monkeypatch: MonkeyPatch) -> 
     """Redis backend can be selected when REDIS_URL is configured."""
     monkeypatch.setenv("BUS_BACKEND", "redis")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("BUS_REDIS_FALLBACK_TO_INMEMORY", "false")
     get_settings.cache_clear()
     settings = Settings()
     bus = create_bus(settings)
@@ -36,3 +37,33 @@ def test_settings_require_redis_url(monkeypatch: MonkeyPatch) -> None:
     with pytest.raises(ValueError) as excinfo:
         Settings()
     assert "REDIS_URL is required when BUS_BACKEND=redis" in str(excinfo.value)
+
+
+def test_create_bus_falls_back_to_inmemory_when_redis_ping_fails(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Redis startup health failures should fall back to in-memory when enabled."""
+    monkeypatch.setenv("BUS_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("BUS_REDIS_FALLBACK_TO_INMEMORY", "true")
+    monkeypatch.setattr(RedisBus, "ping", lambda self: False)
+    get_settings.cache_clear()
+
+    settings = Settings()
+    bus = create_bus(settings)
+
+    assert isinstance(bus, InMemoryBus)
+
+
+def test_create_bus_keeps_redis_when_fallback_disabled(monkeypatch: MonkeyPatch) -> None:
+    """Fallback can be disabled to keep strict Redis behavior."""
+    monkeypatch.setenv("BUS_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("BUS_REDIS_FALLBACK_TO_INMEMORY", "false")
+    monkeypatch.setattr(RedisBus, "ping", lambda self: False)
+    get_settings.cache_clear()
+
+    settings = Settings()
+    bus = create_bus(settings)
+
+    assert isinstance(bus, RedisBus)

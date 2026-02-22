@@ -36,9 +36,31 @@ class TelegramWebhookOutcome(StrEnum):
     """Terminal outcomes for one Telegram webhook update."""
 
     TASK_ENQUEUED = "TASK_ENQUEUED"
+    ENQUEUE_FAILED = "ENQUEUE_FAILED"
     REGISTERED = "REGISTERED"
     REGISTRATION_REQUIRED = "REGISTRATION_REQUIRED"
     IGNORED = "IGNORED"
+
+
+class RuntimeSetting(Base):
+    """Mutable runtime configuration seeded via migrations."""
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(length=128), primary_key=True)
+    value: Mapped[str] = mapped_column(String(length=256), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(length=255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class Organization(Base):
@@ -164,7 +186,15 @@ class TelegramWebhookEvent(Base):
         UniqueConstraint("update_id", name="uq_telegram_webhook_events_update_id"),
         Index("ix_telegram_webhook_events_telegram_user_id", "telegram_user_id"),
         CheckConstraint(
-            "outcome IN ('TASK_ENQUEUED', 'REGISTERED', 'REGISTRATION_REQUIRED', 'IGNORED')",
+            (
+                "outcome IN ("
+                "'TASK_ENQUEUED', "
+                "'ENQUEUE_FAILED', "
+                "'REGISTERED', "
+                "'REGISTRATION_REQUIRED', "
+                "'IGNORED'"
+                ")"
+            ),
             name="ck_telegram_webhook_events_outcome",
         ),
     )
