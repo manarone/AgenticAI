@@ -53,6 +53,14 @@ def test_enqueue_deduplicates_by_job_id(queue_bus: EventBus) -> None:
     assert messages[0]["job_id"] == "job-dup"
 
 
+def test_enqueue_allows_reenqueue_after_dequeue(queue_bus: EventBus) -> None:
+    """Queue backends should allow recovery re-enqueue once a message is consumed."""
+    assert queue_bus.enqueue("tasks", "job-retry", {"task_id": "job-retry"}) is True
+    assert queue_bus.enqueue("tasks", "job-retry", {"task_id": "job-retry"}) is False
+    assert len(queue_bus.dequeue("tasks", limit=1)) == 1
+    assert queue_bus.enqueue("tasks", "job-retry", {"task_id": "job-retry"}) is True
+
+
 def test_publish_and_drain_compatibility(queue_bus: EventBus) -> None:
     """Legacy publish/drain behavior should still work with queue internals."""
     queue_bus.publish("events", {"kind": "task.created", "task_id": "abc"})

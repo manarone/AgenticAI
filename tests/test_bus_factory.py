@@ -15,6 +15,7 @@ def test_settings_default_to_inmemory(monkeypatch: MonkeyPatch) -> None:
     get_settings.cache_clear()
     settings = Settings()
     assert settings.bus_backend == "inmemory"
+    assert settings.bus_redis_fallback_to_inmemory is False
     assert isinstance(create_bus(settings), InMemoryBus)
 
 
@@ -113,3 +114,49 @@ def test_create_bus_runtime_failover_switches_to_inmemory(monkeypatch: MonkeyPat
     assert redis_enqueue_calls["count"] == 1
     assert bus.enqueue("tasks", "job-1", {"task_id": "job-1"}) is False
     assert redis_enqueue_calls["count"] == 1
+
+
+def test_settings_require_webhook_secret_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production environment should fail closed when webhook secret is absent."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", raising=False)
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError) as excinfo:
+        Settings()
+    assert "TELEGRAM_WEBHOOK_SECRET is required" in str(excinfo.value)
+
+
+def test_settings_allow_insecure_webhook_override_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production can explicitly opt into insecure webhook mode when required."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", "true")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    get_settings.cache_clear()
+    settings = Settings()
+    assert settings.allow_insecure_telegram_webhook is True
+
+
+def test_settings_require_task_api_token_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production environment should fail closed when task API token is absent."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+    monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_TASK_API", raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(ValueError) as excinfo:
+        Settings()
+    assert "TASK_API_AUTH_TOKEN is required" in str(excinfo.value)
+
+
+def test_settings_allow_insecure_task_api_override_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production can explicitly opt into insecure task API mode when required."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+    monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ALLOW_INSECURE_TASK_API", "true")
+    get_settings.cache_clear()
+    settings = Settings()
+    assert settings.allow_insecure_task_api is True

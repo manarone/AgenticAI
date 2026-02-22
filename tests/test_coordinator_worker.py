@@ -1,6 +1,7 @@
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,15 +9,25 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from agenticai.coordinator import ExecutionResult, PlannerExecutorAdapter, PlannerExecutorHandoff
+from agenticai.coordinator import (
+    CoordinatorWorker,
+    ExecutionResult,
+    PlannerExecutorAdapter,
+    PlannerExecutorHandoff,
+)
 from agenticai.core.config import get_settings
 from agenticai.db.base import Base
-from agenticai.db.models import Organization, User
+from agenticai.db.models import Organization, Task, TaskStatus, User
 from agenticai.db.session import build_engine
 from agenticai.main import create_app
 
 TEST_ORG_ID = "00000000-0000-0000-0000-000000000011"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000012"
+TEST_TASK_API_AUTH_TOKEN = "test-task-api-token"
+TASK_API_HEADERS = {
+    "Authorization": f"Bearer {TEST_TASK_API_AUTH_TOKEN}",
+    "X-Actor-User-Id": TEST_USER_ID,
+}
 
 
 class FailingAdapter:
@@ -47,10 +58,12 @@ def _coordinator_client(
     tmp_path: Path,
     *,
     adapter: PlannerExecutorAdapter | None = None,
+    start_coordinator: bool = True,
 ) -> Generator[TestClient, None, None]:
     database_url = f"sqlite:///{tmp_path}/{uuid4()}.db"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TEST_TASK_API_AUTH_TOKEN)
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
     get_settings.cache_clear()
@@ -77,7 +90,9 @@ def _coordinator_client(
     engine.dispose()
 
     try:
-        with TestClient(create_app(start_coordinator=True, coordinator_adapter=adapter)) as client:
+        with TestClient(
+            create_app(start_coordinator=start_coordinator, coordinator_adapter=adapter)
+        ) as client:
             yield client
     finally:
         get_settings.cache_clear()
@@ -86,6 +101,7 @@ def _coordinator_client(
 def _create_task(client: TestClient, prompt: str) -> str:
     response = client.post(
         "/v1/tasks",
+        headers=TASK_API_HEADERS,
         json={
             "org_id": TEST_ORG_ID,
             "requested_by_user_id": TEST_USER_ID,
@@ -108,7 +124,7 @@ def _wait_for_status(
     deadline = time.monotonic() + timeout_seconds
     last_payload: dict[str, object] | None = None
     while time.monotonic() < deadline:
-        response = client.get(f"/v1/tasks/{task_id}")
+        response = client.get(f"/v1/tasks/{task_id}", headers=TASK_API_HEADERS)
         assert response.status_code == 200
         payload = response.json()
         last_payload = payload
@@ -197,7 +213,7 @@ def test_coordinator_preserves_canceled_tasks_during_execution(
         task_id = _create_task(client, "slow task for cancel")
         _wait_for_status(client, task_id, "RUNNING")
 
-        cancel_response = client.post(f"/v1/tasks/{task_id}/cancel")
+        cancel_response = client.post(f"/v1/tasks/{task_id}/cancel", headers=TASK_API_HEADERS)
         assert cancel_response.status_code == 200
         assert cancel_response.json()["status"] == "CANCELED"
 
@@ -228,3 +244,74 @@ def test_coordinator_does_not_block_http_responsiveness(
         assert elapsed < 0.75
 
         _wait_for_status(client, task_id, "SUCCEEDED")
+
+
+def test_coordinator_recovery_reenqueues_stale_queued_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Recovery pass should re-enqueue stale QUEUED tasks that missed queue publish."""
+    with _coordinator_client(monkeypatch, tmp_path, start_coordinator=False) as client:
+        worker = CoordinatorWorker(
+            bus=client.app.state.bus,
+            session_factory=client.app.state.db_session_factory,
+            queued_recovery_age_seconds=1.0,
+            running_timeout_seconds=3600.0,
+            recovery_scan_interval_seconds=1.0,
+        )
+        stale_time = datetime.now(UTC) - timedelta(seconds=120)
+        with Session(bind=client.app.state.db_engine) as session:
+            task = Task(
+                org_id=TEST_ORG_ID,
+                requested_by_user_id=TEST_USER_ID,
+                status=TaskStatus.QUEUED.value,
+                prompt="stale queued task",
+                created_at=stale_time,
+                updated_at=stale_time,
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        worker._recover_stale_queued_tasks()
+
+        queued_messages = client.app.state.bus.dequeue("tasks", limit=10)
+        assert len(queued_messages) == 1
+        assert queued_messages[0]["job_id"] == task_id
+        assert queued_messages[0]["payload"]["task_id"] == task_id
+
+
+def test_coordinator_recovery_times_out_stale_running_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Recovery pass should transition stale RUNNING tasks to TIMED_OUT."""
+    with _coordinator_client(monkeypatch, tmp_path, start_coordinator=False) as client:
+        worker = CoordinatorWorker(
+            bus=client.app.state.bus,
+            session_factory=client.app.state.db_session_factory,
+            queued_recovery_age_seconds=3600.0,
+            running_timeout_seconds=1.0,
+            recovery_scan_interval_seconds=1.0,
+        )
+        stale_time = datetime.now(UTC) - timedelta(seconds=120)
+        with Session(bind=client.app.state.db_engine) as session:
+            task = Task(
+                org_id=TEST_ORG_ID,
+                requested_by_user_id=TEST_USER_ID,
+                status=TaskStatus.RUNNING.value,
+                prompt="stale running task",
+                created_at=stale_time,
+                updated_at=stale_time,
+                started_at=stale_time,
+            )
+            session.add(task)
+            session.commit()
+            task_id = task.id
+
+        worker._recover_stale_running_tasks()
+
+        with Session(bind=client.app.state.db_engine) as session:
+            recovered = session.get(Task, task_id)
+            assert recovered is not None
+            assert recovered.status == TaskStatus.TIMED_OUT.value
+            assert recovered.completed_at is not None
+            assert recovered.error_message == "Coordinator recovery timed out a stale RUNNING task"

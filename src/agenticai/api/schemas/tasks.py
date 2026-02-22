@@ -10,9 +10,9 @@ from agenticai.db.models import TaskStatus
 class TaskCreateRequest(BaseModel):
     """Payload accepted by task creation endpoint."""
 
-    org_id: str = Field(min_length=1, max_length=36)
-    requested_by_user_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1)
+    org_id: str | None = Field(default=None, min_length=1, max_length=36)
+    requested_by_user_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class TaskResponse(BaseModel):

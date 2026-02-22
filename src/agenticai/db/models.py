@@ -95,9 +95,7 @@ class User(Base):
     """Mapped user identity scoped to one organization."""
 
     __tablename__ = "users"
-    __table_args__ = (
-        UniqueConstraint("org_id", "telegram_user_id", name="uq_users_org_telegram_user_id"),
-    )
+    __table_args__ = (UniqueConstraint("telegram_user_id", name="uq_users_telegram_user_id"),)
 
     id: Mapped[str] = mapped_column(
         String(length=36),
@@ -129,6 +127,12 @@ class Task(Base):
     __table_args__ = (
         Index("ix_tasks_org_status", "org_id", "status"),
         Index("ix_tasks_created_at", "created_at"),
+        UniqueConstraint(
+            "org_id",
+            "requested_by_user_id",
+            "idempotency_key",
+            name="uq_tasks_org_user_idempotency_key",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -154,6 +158,7 @@ class Task(Base):
         default=TaskStatus.QUEUED.value,
     )
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(length=128), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

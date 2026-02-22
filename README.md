@@ -37,7 +37,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
 alembic upgrade head
-uvicorn agenticai.main:app --app-dir src --reload --host 0.0.0.0 --port 8000
+uvicorn agenticai.main:app --app-dir src --reload --host 127.0.0.1 --port 8000
 ```
 
 Run checks:
@@ -59,7 +59,7 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-Latest migration seeds `runtime_settings.bus.redis_fallback_to_inmemory=true` so Redis startup fallback can be managed with persistent config and env overrides.
+Latest migration sets `runtime_settings.bus.redis_fallback_to_inmemory=false` so Redis startup fallback is opt-in via persistent config/env overrides.
 
 ## API status
 
@@ -73,18 +73,29 @@ Current scaffold endpoints:
 - `GET /v1/tasks/{task_id}`
 - `POST /v1/tasks/{task_id}/cancel`
 
+`/v1/tasks*` requires:
+
+- `Authorization: Bearer <TASK_API_AUTH_TOKEN>`
+- `X-Actor-User-Id: <user_uuid>`
+
+Task creation supports idempotent retries with optional `Idempotency-Key` header.
+
 ## Deployment notes
 
 - Container entrypoint serves on port `8000`
 - Container startup runs `alembic upgrade head` before launching Uvicorn
 - Supported queue backends: `inmemory` (default) and `redis`
 - Set `BUS_BACKEND=redis` and `REDIS_URL=redis://host:6379/0` to enable Redis queues
-- `BUS_REDIS_FALLBACK_TO_INMEMORY` controls whether startup falls back to `inmemory` if Redis is unavailable (default `true`)
+- `BUS_REDIS_FALLBACK_TO_INMEMORY` controls whether startup falls back to `inmemory` if Redis is unavailable (default `false`)
 - Coordinator worker runs in-process and consumes the `tasks` queue in the background
 - Optional coordinator tuning:
   - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)
   - `COORDINATOR_BATCH_SIZE` (default `10`)
+- Set `TASK_API_AUTH_TOKEN` for `/v1/tasks*` authentication
 - Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
+- Optional hardening overrides:
+  - `ALLOW_INSECURE_TASK_API=true` (dev/local only)
+  - `ALLOW_INSECURE_TELEGRAM_WEBHOOK=true` (dev/local only)
 - Health check path: `/healthz`
 - Run `alembic upgrade head` against the target database before restarting or rolling out.
 

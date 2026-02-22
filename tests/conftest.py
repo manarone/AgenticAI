@@ -13,6 +13,7 @@ from agenticai.main import create_app
 
 TEST_ORG_ID = "00000000-0000-0000-0000-000000000001"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000002"
+TEST_TASK_API_AUTH_TOKEN = "test-task-api-token"
 
 
 @pytest.fixture
@@ -33,6 +34,7 @@ def client(
     database_url = f"sqlite:///{tmp_path}/test.db"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TEST_TASK_API_AUTH_TOKEN)
     get_settings.cache_clear()
 
     engine = build_engine(database_url)
@@ -59,3 +61,12 @@ def client(
     with TestClient(create_app(start_coordinator=False)) as test_client:
         yield test_client
     get_settings.cache_clear()
+
+
+@pytest.fixture
+def task_api_headers() -> dict[str, str]:
+    """Authenticated task API headers for the seeded test user."""
+    return {
+        "Authorization": f"Bearer {TEST_TASK_API_AUTH_TOKEN}",
+        "X-Actor-User-Id": TEST_USER_ID,
+    }

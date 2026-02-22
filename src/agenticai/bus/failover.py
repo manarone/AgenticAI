@@ -5,6 +5,24 @@ from agenticai.bus.base import EventBus, QueuedMessage
 
 logger = logging.getLogger(__name__)
 
+try:
+    from redis.exceptions import RedisError
+
+    FAILOVER_EXCEPTIONS: tuple[type[Exception], ...] = (
+        RedisError,
+        RuntimeError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    )
+except ImportError:
+    FAILOVER_EXCEPTIONS = (
+        RuntimeError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    )
+
 
 class RedisFailoverBus(EventBus):
     """Redis-first bus that permanently falls back to in-memory on runtime failure."""
@@ -32,12 +50,17 @@ class RedisFailoverBus(EventBus):
             exc_info=True,
         )
 
+    @property
+    def active_backend(self) -> str:
+        """Report current runtime backend for readiness and observability."""
+        return "inmemory" if self._use_fallback else "redis"
+
     def enqueue(self, queue: str, job_id: str, payload: dict[str, object]) -> bool:
         if self._use_fallback:
             return self._fallback.enqueue(queue, job_id, payload)
         try:
             return self._primary.enqueue(queue, job_id, payload)
-        except Exception as error:
+        except FAILOVER_EXCEPTIONS as error:
             self._activate_fallback(operation="enqueue", error=error)
             return self._fallback.enqueue(queue, job_id, payload)
 
@@ -46,7 +69,7 @@ class RedisFailoverBus(EventBus):
             return self._fallback.dequeue(queue, limit=limit)
         try:
             return self._primary.dequeue(queue, limit=limit)
-        except Exception as error:
+        except FAILOVER_EXCEPTIONS as error:
             self._activate_fallback(operation="dequeue", error=error)
             return self._fallback.dequeue(queue, limit=limit)
 
@@ -56,7 +79,7 @@ class RedisFailoverBus(EventBus):
             return
         try:
             self._primary.publish(topic, payload)
-        except Exception as error:
+        except FAILOVER_EXCEPTIONS as error:
             self._activate_fallback(operation="publish", error=error)
             self._fallback.publish(topic, payload)
 
@@ -65,7 +88,7 @@ class RedisFailoverBus(EventBus):
             return self._fallback.drain(topic)
         try:
             return self._primary.drain(topic)
-        except Exception as error:
+        except FAILOVER_EXCEPTIONS as error:
             self._activate_fallback(operation="drain", error=error)
             return self._fallback.drain(topic)
 
@@ -74,7 +97,7 @@ class RedisFailoverBus(EventBus):
             return self._fallback.ping()
         try:
             healthy = self._primary.ping()
-        except Exception as error:
+        except FAILOVER_EXCEPTIONS as error:
             self._activate_fallback(operation="ping", error=error)
             return self._fallback.ping()
         if healthy is False:
@@ -88,5 +111,5 @@ class RedisFailoverBus(EventBus):
             if callable(close):
                 try:
                     close()
-                except Exception:
+                except FAILOVER_EXCEPTIONS:
                     logger.warning("Failed to close queue bus during shutdown", exc_info=True)

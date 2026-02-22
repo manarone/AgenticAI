@@ -2,13 +2,18 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from agenticai.api.dependencies import get_db_session, get_event_bus
+from agenticai.api.dependencies import (
+    TaskApiPrincipal,
+    get_db_session,
+    get_event_bus,
+    get_task_api_principal,
+)
 from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import (
     ErrorResponse,
@@ -25,6 +30,24 @@ DBSession = Annotated[Session, Depends(get_db_session)]
 EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
 logger = logging.getLogger(__name__)
 
+try:
+    from redis.exceptions import RedisError
+
+    QUEUE_EXCEPTIONS: tuple[type[Exception], ...] = (
+        RedisError,
+        RuntimeError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    )
+except ImportError:
+    QUEUE_EXCEPTIONS = (
+        RuntimeError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+    )
+
 
 TERMINAL_STATUSES = {
     TaskStatus.SUCCEEDED.value,
@@ -32,6 +55,7 @@ TERMINAL_STATUSES = {
     TaskStatus.CANCELED.value,
     TaskStatus.TIMED_OUT.value,
 }
+MAX_TASK_LIST_LIMIT = 100
 
 
 def _task_response(task: Task) -> TaskResponse:
@@ -51,9 +75,24 @@ def _task_response(task: Task) -> TaskResponse:
 
 
 @router.get("/tasks", response_model=TaskListResponse)
-def list_tasks(db: DBSession) -> TaskListResponse:
+def list_tasks(
+    db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+    limit: Annotated[int, Query(ge=1, le=MAX_TASK_LIST_LIMIT)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
+) -> TaskListResponse:
     """List current tasks from persistent storage."""
-    tasks = db.execute(select(Task).order_by(Task.created_at.desc())).scalars().all()
+    statement = (
+        select(Task)
+        .where(Task.org_id == principal.org_id)
+        .order_by(Task.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if task_status is not None:
+        statement = statement.where(Task.status == task_status.value)
+    tasks = db.execute(statement).scalars().all()
     items = [_task_response(task) for task in tasks]
     return TaskListResponse(items=items, count=len(items))
 
@@ -64,6 +103,7 @@ def list_tasks(db: DBSession) -> TaskListResponse:
     response_model=TaskResponse,
     responses={
         400: {"model": ErrorResponse},
+        401: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )
@@ -71,14 +111,36 @@ def create_task(
     payload: TaskCreateRequest,
     db: DBSession,
     bus: EventBusDep,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TaskResponse | JSONResponse:
     """Create and persist a queued task."""
+    normalized_idempotency_key = None
+    if idempotency_key is not None:
+        normalized_idempotency_key = idempotency_key.strip()
+        if not normalized_idempotency_key:
+            return build_error_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                code="TASK_CREATE_INVALID_IDEMPOTENCY_KEY",
+                message="Idempotency-Key cannot be blank",
+            )
+        existing_task = db.execute(
+            select(Task).where(
+                Task.org_id == principal.org_id,
+                Task.requested_by_user_id == principal.user_id,
+                Task.idempotency_key == normalized_idempotency_key,
+            )
+        ).scalar_one_or_none()
+        if existing_task is not None:
+            return _task_response(existing_task)
+
     now = datetime.now(UTC)
     task = Task(
-        org_id=payload.org_id,
-        requested_by_user_id=payload.requested_by_user_id,
+        org_id=principal.org_id,
+        requested_by_user_id=principal.user_id,
         status=TaskStatus.QUEUED.value,
         prompt=payload.prompt,
+        idempotency_key=normalized_idempotency_key,
         created_at=now,
         updated_at=now,
     )
@@ -87,10 +149,20 @@ def create_task(
         db.commit()
     except IntegrityError:
         db.rollback()
+        if normalized_idempotency_key is not None:
+            existing_task = db.execute(
+                select(Task).where(
+                    Task.org_id == principal.org_id,
+                    Task.requested_by_user_id == principal.user_id,
+                    Task.idempotency_key == normalized_idempotency_key,
+                )
+            ).scalar_one_or_none()
+            if existing_task is not None:
+                return _task_response(existing_task)
         return build_error_response(
             status_code=status.HTTP_400_BAD_REQUEST,
             code="TASK_CREATE_INVALID_REFERENCE",
-            message="org_id or requested_by_user_id does not exist",
+            message="Task could not be persisted",
         )
     db.refresh(task)
     log_event(
@@ -112,7 +184,7 @@ def create_task(
                 "status": task.status,
             },
         )
-    except Exception:
+    except QUEUE_EXCEPTIONS:
         accepted = False
         logger.exception("Failed to enqueue task %s", task.id)
 
@@ -149,14 +221,20 @@ def create_task(
 @router.get(
     "/tasks/{task_id}",
     response_model=TaskResponse,
-    responses={404: {"model": ErrorResponse}},
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 def get_task(
     task_id: str,
     db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
 ) -> TaskResponse | JSONResponse:
     """Fetch a task by id."""
-    task = db.get(Task, task_id)
+    task = db.execute(
+        select(Task).where(
+            Task.id == task_id,
+            Task.org_id == principal.org_id,
+        )
+    ).scalar_one_or_none()
     if task is None:
         return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -170,6 +248,7 @@ def get_task(
     "/tasks/{task_id}/cancel",
     response_model=TaskResponse,
     responses={
+        401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
         409: {"model": ErrorResponse},
     },
@@ -177,9 +256,15 @@ def get_task(
 def cancel_task(
     task_id: str,
     db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
 ) -> TaskResponse | JSONResponse:
     """Cancel a task when it is not terminal."""
-    task = db.get(Task, task_id)
+    task = db.execute(
+        select(Task).where(
+            Task.id == task_id,
+            Task.org_id == principal.org_id,
+        )
+    ).scalar_one_or_none()
     if task is None:
         return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,

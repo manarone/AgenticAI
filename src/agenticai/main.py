@@ -35,7 +35,7 @@ async def _close_resource(resource: object) -> None:
                 method_name,
                 RESOURCE_CLOSE_TIMEOUT_SECONDS,
             )
-        except Exception:
+        except (RuntimeError, OSError):
             logger.exception("Failed to close resource via '%s'", method_name)
         return
 
@@ -68,6 +68,10 @@ def create_app(
                 adapter=coordinator_adapter,
                 poll_interval_seconds=settings.coordinator_poll_interval_seconds,
                 batch_size=settings.coordinator_batch_size,
+                recovery_scan_interval_seconds=settings.task_recovery_scan_interval_seconds,
+                recovery_batch_size=settings.task_recovery_batch_size,
+                queued_recovery_age_seconds=settings.task_recovery_queued_age_seconds,
+                running_timeout_seconds=settings.task_recovery_running_timeout_seconds,
             )
             await coordinator.start()
             app.state.coordinator = coordinator
@@ -84,7 +88,7 @@ def create_app(
         if engine is not None:
             try:
                 engine.dispose()
-            except Exception:
+            except (RuntimeError, OSError):
                 logger.exception("Failed to dispose database engine")
         app.state.db_engine = None
         app.state.db_session_factory = None
