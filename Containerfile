@@ -16,6 +16,8 @@ RUN apt-get update && \
 
 COPY src /app/src
 RUN pip install --no-deps .
+COPY alembic.ini /app/
+COPY alembic /app/alembic
 
 RUN groupadd --system appgroup && \
     useradd --system --gid appgroup --create-home --home-dir /home/appuser appuser && \
@@ -29,4 +31,4 @@ ENV HOST=0.0.0.0 \
 
 USER appuser
 
-CMD ["sh", "-c", "exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]
+CMD ["sh", "-c", "i=0; until alembic upgrade head; do i=$((i+1)); if [ \"$i\" -ge 15 ]; then echo 'alembic upgrade failed after retries'; exit 1; fi; echo \"Retrying alembic upgrade ($i/15)\"; sleep 2; done; exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]

@@ -186,11 +186,10 @@ def test_webhook_returns_503_when_queue_unavailable(client) -> None:
         headers=WEBHOOK_SECRET_HEADER,
         json=_message_update(update_id=5001, telegram_user_id=123456789, text="do work"),
     )
-    assert duplicate.status_code == 200
+    assert duplicate.status_code == 503
     assert duplicate.json() == {
-        "ok": True,
-        "status": "failed",
-        "update_id": 5001,
-        "duplicate": True,
-        "task_id": task.id,
+        "error": {
+            "code": "TASK_QUEUE_UNAVAILABLE",
+            "message": "Task enqueue failed because the queue backend is unavailable",
+        }
     }

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agenticai.api.dependencies import get_db_session, get_event_bus
+from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import (
     ErrorResponse,
     TaskCreateRequest,
@@ -49,24 +50,6 @@ def _task_response(task: Task) -> TaskResponse:
     )
 
 
-def _error_response(
-    *,
-    status_code: int,
-    code: str,
-    message: str,
-) -> JSONResponse:
-    """Build a strongly-typed error payload."""
-    payload = ErrorResponse.model_validate(
-        {
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        }
-    )
-    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
-
-
 @router.get("/tasks", response_model=TaskListResponse)
 def list_tasks(db: DBSession) -> TaskListResponse:
     """List current tasks from persistent storage."""
@@ -104,7 +87,7 @@ def create_task(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_400_BAD_REQUEST,
             code="TASK_CREATE_INVALID_REFERENCE",
             message="org_id or requested_by_user_id does not exist",
@@ -148,7 +131,7 @@ def create_task(
             queue=TASK_QUEUE,
             final_status=task.status,
         )
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="TASK_QUEUE_UNAVAILABLE",
             message="Task enqueue failed because the queue backend is unavailable",
@@ -175,7 +158,7 @@ def get_task(
     """Fetch a task by id."""
     task = db.get(Task, task_id)
     if task is None:
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,
             code="TASK_NOT_FOUND",
             message=f"Task '{task_id}' was not found",
@@ -198,7 +181,7 @@ def cancel_task(
     """Cancel a task when it is not terminal."""
     task = db.get(Task, task_id)
     if task is None:
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,
             code="TASK_NOT_FOUND",
             message=f"Task '{task_id}' was not found",
@@ -207,7 +190,7 @@ def cancel_task(
     if task.status in TERMINAL_STATUSES:
         if task.status == TaskStatus.CANCELED.value:
             return _task_response(task)
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_409_CONFLICT,
             code="TASK_NOT_CANCELABLE",
             message=f"Task '{task_id}' is already terminal ({task.status})",
