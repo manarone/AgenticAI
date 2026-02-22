@@ -32,6 +32,7 @@ def client(
     """Provide a fresh test client and isolated DB for each test case."""
     database_url = f"sqlite:///{tmp_path}/test.db"
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret")
     get_settings.cache_clear()
 
     engine = build_engine(database_url)

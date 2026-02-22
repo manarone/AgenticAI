@@ -65,6 +65,7 @@ Current scaffold endpoints:
 
 - `GET /healthz`
 - `GET /readyz`
+- `POST /telegram/webhook`
 - `GET /v1/tasks`
 - `POST /v1/tasks`
 - `GET /v1/tasks/{task_id}`
@@ -74,6 +75,7 @@ Current scaffold endpoints:
 
 - Container entrypoint serves on port `8000`
 - Set `BUS_BACKEND=inmemory` unless Redis bus is wired
+- Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
 - Health check path: `/healthz`
 - Run `alembic upgrade head` against the target database before restarting or rolling out.
 
