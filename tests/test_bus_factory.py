@@ -2,6 +2,7 @@ import pytest
 from pytest import MonkeyPatch
 
 from agenticai.bus.factory import create_bus
+from agenticai.bus.failover import RedisFailoverBus
 from agenticai.bus.inmemory import InMemoryBus
 from agenticai.bus.redis import RedisBus
 from agenticai.core.config import Settings, get_settings
@@ -67,3 +68,48 @@ def test_create_bus_keeps_redis_when_fallback_disabled(monkeypatch: MonkeyPatch)
     bus = create_bus(settings)
 
     assert isinstance(bus, RedisBus)
+
+
+def test_create_bus_uses_failover_wrapper_when_redis_is_healthy(monkeypatch: MonkeyPatch) -> None:
+    """Healthy Redis with fallback enabled should still be wrapped for runtime failover."""
+    monkeypatch.setenv("BUS_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("BUS_REDIS_FALLBACK_TO_INMEMORY", "true")
+    monkeypatch.setattr(RedisBus, "ping", lambda self: True)
+    get_settings.cache_clear()
+
+    settings = Settings()
+    bus = create_bus(settings)
+
+    assert isinstance(bus, RedisFailoverBus)
+
+
+def test_create_bus_runtime_failover_switches_to_inmemory(monkeypatch: MonkeyPatch) -> None:
+    """Runtime Redis failures should switch to in-memory and continue serving requests."""
+    monkeypatch.setenv("BUS_BACKEND", "redis")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("BUS_REDIS_FALLBACK_TO_INMEMORY", "true")
+    monkeypatch.setattr(RedisBus, "ping", lambda self: True)
+    get_settings.cache_clear()
+
+    redis_enqueue_calls = {"count": 0}
+
+    def broken_enqueue(
+        self,
+        queue: str,
+        job_id: str,
+        payload: dict[str, object],
+    ) -> bool:
+        redis_enqueue_calls["count"] += 1
+        raise RuntimeError("redis offline")
+
+    monkeypatch.setattr(RedisBus, "enqueue", broken_enqueue)
+
+    settings = Settings()
+    bus = create_bus(settings)
+
+    assert isinstance(bus, RedisFailoverBus)
+    assert bus.enqueue("tasks", "job-1", {"task_id": "job-1"}) is True
+    assert redis_enqueue_calls["count"] == 1
+    assert bus.enqueue("tasks", "job-1", {"task_id": "job-1"}) is False
+    assert redis_enqueue_calls["count"] == 1

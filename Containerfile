@@ -7,6 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md /app/
+COPY alembic.ini /app/
+COPY alembic /app/alembic
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
@@ -29,4 +31,4 @@ ENV HOST=0.0.0.0 \
 
 USER appuser
 
-CMD ["sh", "-c", "exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]

@@ -76,6 +76,7 @@ Current scaffold endpoints:
 ## Deployment notes
 
 - Container entrypoint serves on port `8000`
+- Container startup runs `alembic upgrade head` before launching Uvicorn
 - Supported queue backends: `inmemory` (default) and `redis`
 - Set `BUS_BACKEND=redis` and `REDIS_URL=redis://host:6379/0` to enable Redis queues
 - `BUS_REDIS_FALLBACK_TO_INMEMORY` controls whether startup falls back to `inmemory` if Redis is unavailable (default `true`)

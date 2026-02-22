@@ -65,6 +65,35 @@ def _build_ack(event: TelegramWebhookEvent, *, duplicate: bool) -> TelegramWebho
     )
 
 
+def _enqueue_failed_response() -> JSONResponse:
+    """Build queue failure response for deterministic retries."""
+    return _error_response(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="TASK_QUEUE_UNAVAILABLE",
+        message="Task enqueue failed because the queue backend is unavailable",
+    )
+
+
+def _response_for_existing_event(
+    *,
+    payload: TelegramUpdate,
+    event: TelegramWebhookEvent,
+    duplicate: bool,
+) -> TelegramWebhookAck | JSONResponse:
+    """Replay a deterministic response from persisted webhook outcome."""
+    ack = _build_ack(event, duplicate=duplicate)
+    _log_webhook_outcome(
+        payload=payload,
+        outcome=ack.status,
+        duplicate=ack.duplicate,
+        telegram_user_id=event.telegram_user_id,
+        task_id=event.task_id,
+    )
+    if event.outcome == TelegramWebhookOutcome.ENQUEUE_FAILED.value:
+        return _enqueue_failed_response()
+    return ack
+
+
 def _log_webhook_outcome(
     *,
     payload: TelegramUpdate,
@@ -190,15 +219,11 @@ def telegram_webhook(
         select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == payload.update_id)
     ).scalar_one_or_none()
     if existing_event is not None:
-        ack = _build_ack(existing_event, duplicate=True)
-        _log_webhook_outcome(
+        return _response_for_existing_event(
             payload=payload,
-            outcome=ack.status,
-            duplicate=ack.duplicate,
-            telegram_user_id=existing_event.telegram_user_id,
-            task_id=existing_event.task_id,
+            event=existing_event,
+            duplicate=True,
         )
-        return ack
 
     message = _message_from_update(payload)
     if message is None or message.from_user is None:
@@ -260,15 +285,11 @@ def telegram_webhook(
                     )
                 ).scalar_one_or_none()
                 if existing_event is not None:
-                    ack = _build_ack(existing_event, duplicate=True)
-                    _log_webhook_outcome(
+                    return _response_for_existing_event(
                         payload=payload,
-                        outcome=ack.status,
-                        duplicate=ack.duplicate,
-                        telegram_user_id=existing_event.telegram_user_id,
-                        task_id=existing_event.task_id,
+                        event=existing_event,
+                        duplicate=True,
                     )
-                    return ack
                 raise
             ack = _build_ack(event, duplicate=False)
             _log_webhook_outcome(
@@ -352,15 +373,11 @@ def telegram_webhook(
             select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == payload.update_id)
         ).scalar_one_or_none()
         if existing_event is not None:
-            ack = _build_ack(existing_event, duplicate=True)
-            _log_webhook_outcome(
+            return _response_for_existing_event(
                 payload=payload,
-                outcome=ack.status,
-                duplicate=ack.duplicate,
-                telegram_user_id=existing_event.telegram_user_id,
-                task_id=existing_event.task_id,
+                event=existing_event,
+                duplicate=True,
             )
-            return ack
         raise
 
     try:
@@ -398,11 +415,7 @@ def telegram_webhook(
             telegram_user_id=telegram_user_id,
             queue=TASK_QUEUE,
         )
-        return _error_response(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            code="TASK_QUEUE_UNAVAILABLE",
-            message="Task enqueue failed because the queue backend is unavailable",
-        )
+        return _enqueue_failed_response()
 
     log_event(
         logger,
