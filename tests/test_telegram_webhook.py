@@ -3,6 +3,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from agenticai.bus.base import TASK_QUEUE
 from agenticai.db.models import Organization, Task, User
 
 WEBHOOK_PATH = "/telegram/webhook"
@@ -84,10 +85,14 @@ def test_webhook_is_idempotent_for_duplicate_delivery(client, seeded_identity) -
         )
     assert task_count == 1
 
-    published_events = client.app.state.bus.drain("task_requests")
-    assert len(published_events) == 1
-    assert published_events[0]["task_id"] == first_payload["task_id"]
-    assert published_events[0]["requested_by_user_id"] == seeded_identity["requested_by_user_id"]
+    queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
+    assert len(queued_messages) == 1
+    assert queued_messages[0]["job_id"] == first_payload["task_id"]
+    assert queued_messages[0]["payload"]["task_id"] == first_payload["task_id"]
+    assert (
+        queued_messages[0]["payload"]["requested_by_user_id"]
+        == seeded_identity["requested_by_user_id"]
+    )
 
 
 def test_webhook_start_with_invite_registers_user(client) -> None:
@@ -122,8 +127,8 @@ def test_webhook_start_with_invite_registers_user(client) -> None:
         ).scalar_one_or_none()
     assert user is not None
 
-    published_events = client.app.state.bus.drain("task_requests")
-    assert published_events == []
+    queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
+    assert queued_messages == []
 
 
 def test_webhook_unknown_user_without_invite_requires_registration(client) -> None:
@@ -142,5 +147,5 @@ def test_webhook_unknown_user_without_invite_requires_registration(client) -> No
         "task_id": None,
     }
 
-    published_events = client.app.state.bus.drain("task_requests")
-    assert published_events == []
+    queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
+    assert queued_messages == []

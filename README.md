@@ -76,6 +76,10 @@ Current scaffold endpoints:
 - Container entrypoint serves on port `8000`
 - Supported queue backends: `inmemory` (default) and `redis`
 - Set `BUS_BACKEND=redis` and `REDIS_URL=redis://host:6379/0` to enable Redis queues
+- Coordinator worker runs in-process and consumes the `tasks` queue in the background
+- Optional coordinator tuning:
+  - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)
+  - `COORDINATOR_BATCH_SIZE` (default `10`)
 - Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
 - Health check path: `/healthz`
 - Run `alembic upgrade head` against the target database before restarting or rolling out.

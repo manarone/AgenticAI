@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, validation_alias="PORT")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
+    coordinator_poll_interval_seconds: float = Field(
+        default=0.1,
+        validation_alias="COORDINATOR_POLL_INTERVAL_SECONDS",
+        gt=0,
+    )
+    coordinator_batch_size: int = Field(
+        default=10,
+        validation_alias="COORDINATOR_BATCH_SIZE",
+        ge=1,
+    )
     redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
     telegram_webhook_secret: SecretStr | None = Field(
         default=None,
