@@ -56,6 +56,6 @@ def client(
         session.commit()
     engine.dispose()
 
-    with TestClient(create_app()) as test_client:
+    with TestClient(create_app(start_coordinator=False)) as test_client:
         yield test_client
     get_settings.cache_clear()

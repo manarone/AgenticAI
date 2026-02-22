@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from agenticai.api.dependencies import get_db_session
 from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
+from agenticai.bus.base import TASK_QUEUE
 from agenticai.core.config import get_settings
 from agenticai.db.models import (
     Organization,
@@ -26,8 +27,6 @@ from agenticai.db.models import (
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 DBSession = Annotated[Session, Depends(get_db_session)]
 logger = logging.getLogger(__name__)
-
-TASK_REQUESTS_TOPIC = "task_requests"
 
 
 def _error_response(*, status_code: int, code: str, message: str) -> JSONResponse:
@@ -286,12 +285,14 @@ def telegram_webhook(
             return _build_ack(existing_event, duplicate=True)
         raise
 
-    bus.publish(
-        TASK_REQUESTS_TOPIC,
+    bus.enqueue(
+        TASK_QUEUE,
+        task.id,
         {
             "task_id": task.id,
             "org_id": task.org_id,
             "requested_by_user_id": task.requested_by_user_id,
+            "status": task.status,
             "source": "telegram",
             "telegram_update_id": payload.update_id,
         },

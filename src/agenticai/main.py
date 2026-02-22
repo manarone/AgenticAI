@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from agenticai.api.router import api_router
 from agenticai.bus.factory import create_bus
+from agenticai.coordinator import CoordinatorWorker, PlannerExecutorAdapter
 from agenticai.core.config import get_settings
 from agenticai.core.logging import configure_logging
 from agenticai.db.session import build_engine, build_session_factory
@@ -38,7 +39,11 @@ async def _close_resource(resource: object) -> None:
         return
 
 
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    start_coordinator: bool = True,
+    coordinator_adapter: PlannerExecutorAdapter | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -50,7 +55,22 @@ def create_app() -> FastAPI:
         app.state.bus = create_bus(settings)
         app.state.db_engine = build_engine(settings.database_url.get_secret_value())
         app.state.db_session_factory = build_session_factory(app.state.db_engine)
+        app.state.coordinator = None
+        if start_coordinator:
+            coordinator = CoordinatorWorker(
+                bus=app.state.bus,
+                session_factory=app.state.db_session_factory,
+                adapter=coordinator_adapter,
+                poll_interval_seconds=settings.coordinator_poll_interval_seconds,
+                batch_size=settings.coordinator_batch_size,
+            )
+            await coordinator.start()
+            app.state.coordinator = coordinator
         yield
+        coordinator = app.state.coordinator
+        if coordinator is not None:
+            await coordinator.stop()
+        app.state.coordinator = None
         bus = getattr(app.state, "bus", None)
         if bus is not None:
             await _close_resource(bus)
