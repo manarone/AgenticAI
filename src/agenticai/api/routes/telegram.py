@@ -1,5 +1,6 @@
 """Telegram webhook ingress route."""
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -24,6 +25,7 @@ from agenticai.db.models import (
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 DBSession = Annotated[Session, Depends(get_db_session)]
+logger = logging.getLogger(__name__)
 
 TASK_REQUESTS_TOPIC = "task_requests"
 
@@ -49,7 +51,7 @@ def _ack_status(outcome: str) -> str:
         TelegramWebhookOutcome.REGISTRATION_REQUIRED.value: "registration_required",
         TelegramWebhookOutcome.IGNORED.value: "ignored",
     }
-    return mapping[outcome]
+    return mapping.get(outcome, outcome.lower())
 
 
 def _build_ack(event: TelegramWebhookEvent, *, duplicate: bool) -> TelegramWebhookAck:
@@ -107,7 +109,7 @@ def _store_event(
     message_text: str | None,
     outcome: TelegramWebhookOutcome,
     task_id: str | None = None,
-) -> TelegramWebhookEvent:
+) -> tuple[TelegramWebhookEvent, bool]:
     """Persist webhook event for idempotent replay handling."""
     event = TelegramWebhookEvent(
         update_id=update_id,
@@ -117,9 +119,18 @@ def _store_event(
         task_id=task_id,
     )
     db.add(event)
-    db.commit()
-    db.refresh(event)
-    return event
+    try:
+        db.commit()
+        db.refresh(event)
+        return event, False
+    except IntegrityError:
+        db.rollback()
+        existing_event = db.execute(
+            select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == update_id)
+        ).scalar_one_or_none()
+        if existing_event is not None:
+            return existing_event, True
+        raise
 
 
 @router.post(
@@ -142,7 +153,12 @@ def telegram_webhook(
         settings = get_settings()
 
     expected_secret = settings.telegram_webhook_secret
-    if expected_secret is not None and webhook_secret != expected_secret.get_secret_value():
+    if expected_secret is None:
+        logger.warning(
+            "TELEGRAM_WEBHOOK_SECRET is not configured; /telegram/webhook is unauthenticated. "
+            "Set TELEGRAM_WEBHOOK_SECRET to secure webhook ingress."
+        )
+    elif webhook_secret != expected_secret.get_secret_value():
         return _error_response(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="TELEGRAM_WEBHOOK_UNAUTHORIZED",
@@ -157,14 +173,14 @@ def telegram_webhook(
 
     message = _message_from_update(payload)
     if message is None or message.from_user is None:
-        event = _store_event(
+        event, duplicate = _store_event(
             db,
             update_id=payload.update_id,
             telegram_user_id=None,
             message_text=None,
             outcome=TelegramWebhookOutcome.IGNORED,
         )
-        return _build_ack(event, duplicate=False)
+        return _build_ack(event, duplicate=duplicate)
 
     telegram_user_id = message.from_user.id
     message_text = message.text.strip() if message.text else None
@@ -187,41 +203,52 @@ def telegram_webhook(
                 telegram_user_id=telegram_user_id,
                 display_name=_display_name_from_message(message),
             )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-            event = _store_event(
-                db,
+            event = TelegramWebhookEvent(
                 update_id=payload.update_id,
                 telegram_user_id=telegram_user_id,
                 message_text=message_text,
-                outcome=TelegramWebhookOutcome.REGISTERED,
+                outcome=TelegramWebhookOutcome.REGISTERED.value,
             )
+            db.add(user)
+            db.add(event)
+            try:
+                db.commit()
+                db.refresh(user)
+                db.refresh(event)
+            except IntegrityError:
+                db.rollback()
+                existing_event = db.execute(
+                    select(TelegramWebhookEvent).where(
+                        TelegramWebhookEvent.update_id == payload.update_id
+                    )
+                ).scalar_one_or_none()
+                if existing_event is not None:
+                    return _build_ack(existing_event, duplicate=True)
+                raise
             return _build_ack(event, duplicate=False)
 
     if user is None:
-        event = _store_event(
+        event, duplicate = _store_event(
             db,
             update_id=payload.update_id,
             telegram_user_id=telegram_user_id,
             message_text=message_text,
             outcome=TelegramWebhookOutcome.REGISTRATION_REQUIRED,
         )
-        return _build_ack(event, duplicate=False)
+        return _build_ack(event, duplicate=duplicate)
 
     if not message_text or message_text.startswith("/start"):
-        event = _store_event(
+        event, duplicate = _store_event(
             db,
             update_id=payload.update_id,
             telegram_user_id=telegram_user_id,
             message_text=message_text,
             outcome=TelegramWebhookOutcome.IGNORED,
         )
-        return _build_ack(event, duplicate=False)
+        return _build_ack(event, duplicate=duplicate)
 
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
-        db.rollback()
         return _error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="TASK_QUEUE_UNAVAILABLE",
@@ -240,16 +267,6 @@ def telegram_webhook(
     db.add(task)
     try:
         db.flush()
-        bus.publish(
-            TASK_REQUESTS_TOPIC,
-            {
-                "task_id": task.id,
-                "org_id": task.org_id,
-                "requested_by_user_id": task.requested_by_user_id,
-                "source": "telegram",
-                "telegram_update_id": payload.update_id,
-            },
-        )
         event = TelegramWebhookEvent(
             update_id=payload.update_id,
             telegram_user_id=telegram_user_id,
@@ -268,5 +285,16 @@ def telegram_webhook(
         if existing_event is not None:
             return _build_ack(existing_event, duplicate=True)
         raise
+
+    bus.publish(
+        TASK_REQUESTS_TOPIC,
+        {
+            "task_id": task.id,
+            "org_id": task.org_id,
+            "requested_by_user_id": task.requested_by_user_id,
+            "source": "telegram",
+            "telegram_update_id": payload.update_id,
+        },
+    )
 
     return _build_ack(event, duplicate=False)

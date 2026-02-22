@@ -122,6 +122,9 @@ def test_webhook_start_with_invite_registers_user(client) -> None:
         ).scalar_one_or_none()
     assert user is not None
 
+    published_events = client.app.state.bus.drain("task_requests")
+    assert published_events == []
+
 
 def test_webhook_unknown_user_without_invite_requires_registration(client) -> None:
     """Unknown users without invite context are acknowledged but not queued."""

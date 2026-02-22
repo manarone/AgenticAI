@@ -4,7 +4,17 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agenticai.db.base import Base
@@ -142,6 +152,7 @@ class Task(Base):
     webhook_events: Mapped[list["TelegramWebhookEvent"]] = relationship(
         back_populates="task",
         cascade="save-update, merge",
+        passive_deletes=True,
     )
 
 
@@ -152,6 +163,10 @@ class TelegramWebhookEvent(Base):
     __table_args__ = (
         UniqueConstraint("update_id", name="uq_telegram_webhook_events_update_id"),
         Index("ix_telegram_webhook_events_telegram_user_id", "telegram_user_id"),
+        CheckConstraint(
+            "outcome IN ('TASK_ENQUEUED', 'REGISTERED', 'REGISTRATION_REQUIRED', 'IGNORED')",
+            name="ck_telegram_webhook_events_outcome",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
