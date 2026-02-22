@@ -100,7 +100,7 @@ def _task_enqueue_payload(
         "task_id": task.id,
         "org_id": task.org_id,
         "requested_by_user_id": task.requested_by_user_id,
-        "status": status_override or task.status,
+        "status": task.status if status_override is None else status_override,
         "source": "telegram",
         "telegram_update_id": telegram_update_id,
     }
@@ -125,6 +125,7 @@ def _recover_failed_enqueue_if_possible(
     previous_status = task.status
     previous_error_message = task.error_message
     previous_completed_at = task.completed_at
+    previous_outcome = event.outcome
     try:
         recovered_at = datetime.now(UTC)
         task.status = TaskStatus.QUEUED.value
@@ -137,6 +138,11 @@ def _recover_failed_enqueue_if_possible(
         db.commit()
         db.refresh(event)
     except Exception:
+        db.rollback()
+        task.status = previous_status
+        task.error_message = previous_error_message
+        task.completed_at = previous_completed_at
+        event.outcome = previous_outcome
         logger.exception(
             "Failed to persist duplicate enqueue recovery state for update %s and task %s",
             event.update_id,
@@ -152,7 +158,6 @@ def _recover_failed_enqueue_if_possible(
             _task_enqueue_payload(
                 task,
                 telegram_update_id=event.update_id,
-                status_override=TaskStatus.QUEUED.value,
             ),
         )
         enqueue_failed = not accepted
