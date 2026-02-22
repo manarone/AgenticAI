@@ -39,10 +39,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
         """Validate backend compatibility for the current scaffold."""
-        if self.bus_backend != "inmemory":
-            raise ValueError(
-                "BUS_BACKEND must be 'inmemory' for now; redis backend is not implemented yet"
-            )
+        supported_backends = {"inmemory", "redis"}
+        if self.bus_backend not in supported_backends:
+            options = ", ".join(sorted(supported_backends))
+            raise ValueError(f"BUS_BACKEND must be one of: {options}")
+        if self.bus_backend == "redis" and not self.redis_url:
+            raise ValueError("REDIS_URL is required when BUS_BACKEND=redis")
 
         return self
 
