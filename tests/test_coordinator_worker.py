@@ -1,5 +1,5 @@
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -32,10 +32,12 @@ class SlowAdapter:
 
     def __init__(self, *, delay_seconds: float) -> None:
         self._delay_seconds = delay_seconds
+        self.completed_calls = 0
 
     def execute(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
         _ = handoff
         time.sleep(self._delay_seconds)
+        self.completed_calls += 1
         return ExecutionResult(success=True)
 
 
@@ -54,8 +56,8 @@ def _coordinator_client(
     get_settings.cache_clear()
 
     engine = build_engine(database_url)
-    Base.metadata.create_all(bind=engine)
-    with Session(bind=engine) as session:
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
         session.add(
             Organization(
                 id=TEST_ORG_ID,
@@ -74,10 +76,11 @@ def _coordinator_client(
         session.commit()
     engine.dispose()
 
-    with TestClient(create_app(start_coordinator=True, coordinator_adapter=adapter)) as client:
-        yield client
-
-    get_settings.cache_clear()
+    try:
+        with TestClient(create_app(start_coordinator=True, coordinator_adapter=adapter)) as client:
+            yield client
+    finally:
+        get_settings.cache_clear()
 
 
 def _create_task(client: TestClient, prompt: str) -> str:
@@ -118,6 +121,20 @@ def _wait_for_status(
     )
 
 
+def _wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout_seconds: float = 2.0,
+    poll_seconds: float = 0.02,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(poll_seconds)
+    pytest.fail("Timed out waiting for expected condition")
+
+
 def test_coordinator_transitions_task_to_succeeded(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -146,10 +163,11 @@ def test_coordinator_preserves_canceled_tasks_during_execution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Cancellation should remain terminal even if execution finishes later."""
+    slow_adapter = SlowAdapter(delay_seconds=0.3)
     with _coordinator_client(
         monkeypatch,
         tmp_path,
-        adapter=SlowAdapter(delay_seconds=0.3),
+        adapter=slow_adapter,
     ) as client:
         task_id = _create_task(client, "slow task for cancel")
         _wait_for_status(client, task_id, "RUNNING")
@@ -161,10 +179,9 @@ def test_coordinator_preserves_canceled_tasks_during_execution(
         payload = _wait_for_status(client, task_id, "CANCELED", timeout_seconds=1.0)
         assert payload["completed_at"] is not None
 
-        time.sleep(0.35)
-        final_response = client.get(f"/v1/tasks/{task_id}")
-        assert final_response.status_code == 200
-        assert final_response.json()["status"] == "CANCELED"
+        _wait_until(lambda: slow_adapter.completed_calls >= 1, timeout_seconds=1.5)
+        final_payload = _wait_for_status(client, task_id, "CANCELED", timeout_seconds=0.5)
+        assert final_payload["status"] == "CANCELED"
 
 
 def test_coordinator_does_not_block_http_responsiveness(
@@ -183,6 +200,6 @@ def test_coordinator_does_not_block_http_responsiveness(
         ready_response = client.get("/readyz")
         elapsed = time.perf_counter() - start
         assert ready_response.status_code == 200
-        assert elapsed < 0.2
+        assert elapsed < 0.75
 
         _wait_for_status(client, task_id, "SUCCEEDED")

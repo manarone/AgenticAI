@@ -67,7 +67,7 @@ def create_app(
             await coordinator.start()
             app.state.coordinator = coordinator
         yield
-        coordinator = getattr(app.state, "coordinator", None)
+        coordinator = app.state.coordinator
         if coordinator is not None:
             await coordinator.stop()
         app.state.coordinator = None

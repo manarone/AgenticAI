@@ -110,14 +110,28 @@ class CoordinatorWorker:
 
     async def run_once(self) -> int:
         """Process at most one batch of queued task messages."""
-        messages = await asyncio.to_thread(
-            self._bus.dequeue,
-            TASK_QUEUE,
-            limit=self._batch_size,
-        )
+        try:
+            messages = await asyncio.to_thread(
+                self._bus.dequeue,
+                TASK_QUEUE,
+                limit=self._batch_size,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to dequeue messages from queue '%s'", TASK_QUEUE)
+            return 0
+
+        processed_count = 0
         for message in messages:
-            await self._process_message(message)
-        return len(messages)
+            try:
+                await self._process_message(message)
+                processed_count += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to process queued message: %s", message)
+        return processed_count
 
     async def _process_message(self, message: QueuedMessage) -> None:
         payload = message.get("payload", {})
@@ -165,6 +179,9 @@ class CoordinatorWorker:
                 return None
             if task.status != TaskStatus.QUEUED.value:
                 return None
+            org_id = task.org_id
+            requested_by_user_id = task.requested_by_user_id
+            prompt = task.prompt
 
             now = datetime.now(UTC)
             task.status = TaskStatus.RUNNING.value
@@ -176,9 +193,9 @@ class CoordinatorWorker:
 
             return PlannerExecutorHandoff(
                 task_id=task.id,
-                org_id=task.org_id,
-                requested_by_user_id=task.requested_by_user_id,
-                prompt=task.prompt,
+                org_id=org_id,
+                requested_by_user_id=requested_by_user_id,
+                prompt=prompt,
             )
 
     def _finalize_task(self, task_id: str, result: ExecutionResult) -> None:
