@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     bus_backend: str = Field(default="inmemory", validation_alias="BUS_BACKEND")
     redis_url: str | None = Field(default=None, validation_alias="REDIS_URL")
+    telegram_webhook_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="TELEGRAM_WEBHOOK_SECRET",
+    )
     database_url: SecretStr = Field(
         default="sqlite:///./agenticai.db",
         validation_alias="DATABASE_URL",
