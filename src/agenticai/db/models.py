@@ -36,6 +36,7 @@ class TelegramWebhookOutcome(StrEnum):
     """Terminal outcomes for one Telegram webhook update."""
 
     TASK_ENQUEUED = "TASK_ENQUEUED"
+    ENQUEUE_FAILED = "ENQUEUE_FAILED"
     REGISTERED = "REGISTERED"
     REGISTRATION_REQUIRED = "REGISTRATION_REQUIRED"
     IGNORED = "IGNORED"
@@ -185,7 +186,15 @@ class TelegramWebhookEvent(Base):
         UniqueConstraint("update_id", name="uq_telegram_webhook_events_update_id"),
         Index("ix_telegram_webhook_events_telegram_user_id", "telegram_user_id"),
         CheckConstraint(
-            "outcome IN ('TASK_ENQUEUED', 'REGISTERED', 'REGISTRATION_REQUIRED', 'IGNORED')",
+            (
+                "outcome IN ("
+                "'TASK_ENQUEUED', "
+                "'ENQUEUE_FAILED', "
+                "'REGISTERED', "
+                "'REGISTRATION_REQUIRED', "
+                "'IGNORED'"
+                ")"
+            ),
             name="ck_telegram_webhook_events_outcome",
         ),
     )

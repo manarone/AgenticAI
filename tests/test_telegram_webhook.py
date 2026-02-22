@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agenticai.bus.base import TASK_QUEUE
-from agenticai.db.models import Organization, Task, User
+from agenticai.db.models import Organization, Task, TelegramWebhookEvent, User
 
 WEBHOOK_PATH = "/telegram/webhook"
 WEBHOOK_SECRET_HEADER = {"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret"}
@@ -173,6 +173,24 @@ def test_webhook_returns_503_when_queue_unavailable(client) -> None:
 
     with Session(bind=client.app.state.db_engine) as session:
         task = session.execute(select(Task).where(Task.prompt == "do work")).scalar_one()
+        event = session.execute(
+            select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == 5001)
+        ).scalar_one()
     assert task.status == "FAILED"
     assert task.error_message == "Queue backend unavailable during enqueue"
     assert task.completed_at is not None
+    assert event.outcome == "ENQUEUE_FAILED"
+
+    duplicate = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=_message_update(update_id=5001, telegram_user_id=123456789, text="do work"),
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json() == {
+        "ok": True,
+        "status": "failed",
+        "update_id": 5001,
+        "duplicate": True,
+        "task_id": task.id,
+    }

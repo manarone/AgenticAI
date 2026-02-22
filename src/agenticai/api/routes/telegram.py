@@ -47,6 +47,7 @@ def _ack_status(outcome: str) -> str:
     """Convert persisted outcome enum into response status string."""
     mapping = {
         TelegramWebhookOutcome.TASK_ENQUEUED.value: "accepted",
+        TelegramWebhookOutcome.ENQUEUE_FAILED.value: "failed",
         TelegramWebhookOutcome.REGISTERED.value: "registered",
         TelegramWebhookOutcome.REGISTRATION_REQUIRED.value: "registration_required",
         TelegramWebhookOutcome.IGNORED.value: "ignored",
@@ -385,7 +386,9 @@ def telegram_webhook(
         task.error_message = "Queue backend unavailable during enqueue"
         task.completed_at = failure_time
         task.updated_at = failure_time
+        event.outcome = TelegramWebhookOutcome.ENQUEUE_FAILED.value
         db.add(task)
+        db.add(event)
         db.commit()
         log_event(
             logger,
