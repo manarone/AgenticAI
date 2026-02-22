@@ -32,7 +32,7 @@ class TaskListResponse(BaseModel):
     """Response payload for task listing."""
 
     items: list[TaskResponse]
-    count: int
+    count: int  # Total matching tasks for the applied filters.
 
 
 class ErrorDetail(BaseModel):

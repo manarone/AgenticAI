@@ -178,8 +178,18 @@ class CoordinatorWorker:
         if elapsed < self._recovery_scan_interval_seconds:
             return
         self._last_recovery_scan_monotonic = now_monotonic
-        self._recover_stale_queued_tasks()
-        self._recover_stale_running_tasks()
+        try:
+            self._recover_stale_queued_tasks()
+        except WORKER_EXCEPTIONS:
+            logger.exception("Stale QUEUED task recovery failed")
+        except Exception:
+            logger.exception("Stale QUEUED task recovery failed with unexpected error")
+        try:
+            self._recover_stale_running_tasks()
+        except WORKER_EXCEPTIONS:
+            logger.exception("Stale RUNNING task recovery failed")
+        except Exception:
+            logger.exception("Stale RUNNING task recovery failed with unexpected error")
 
     def _recover_stale_queued_tasks(self) -> None:
         """Re-enqueue long-stale QUEUED tasks that may have missed queue publish."""

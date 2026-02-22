@@ -253,11 +253,13 @@ def test_list_tasks_supports_pagination_and_status_filter(client, task_api_heade
 
     page_one = client.get("/v1/tasks?limit=2&offset=0", headers=task_api_headers)
     assert page_one.status_code == 200
-    assert page_one.json()["count"] == 2
+    assert page_one.json()["count"] == 3
+    assert len(page_one.json()["items"]) == 2
 
     page_two = client.get("/v1/tasks?limit=2&offset=2", headers=task_api_headers)
     assert page_two.status_code == 200
-    assert page_two.json()["count"] == 1
+    assert page_two.json()["count"] == 3
+    assert len(page_two.json()["items"]) == 1
 
     canceled_only = client.get("/v1/tasks?status=CANCELED", headers=task_api_headers)
     assert canceled_only.status_code == 200

@@ -8,16 +8,10 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from agenticai.bus.base import EventBus, QueuedMessage, payload_job_id
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
-
-REDIS_BACKEND_EXCEPTIONS: tuple[type[Exception], ...] = (
-    RedisError,
-    RuntimeError,
-    TimeoutError,
-    ConnectionError,
-    OSError,
-)
+REDIS_BACKEND_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 class RedisBus(EventBus):

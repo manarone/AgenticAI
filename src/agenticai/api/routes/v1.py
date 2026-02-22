@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -89,18 +89,16 @@ def list_tasks(
     task_status: Annotated[TaskStatus | None, Query(alias="status")] = None,
 ) -> TaskListResponse:
     """List current tasks from persistent storage."""
-    statement = (
-        select(Task)
-        .where(Task.org_id == principal.org_id)
-        .order_by(Task.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+    filters = [Task.org_id == principal.org_id]
     if task_status is not None:
-        statement = statement.where(Task.status == task_status.value)
+        filters.append(Task.status == task_status.value)
+    statement = (
+        select(Task).where(*filters).order_by(Task.created_at.desc()).limit(limit).offset(offset)
+    )
     tasks = db.execute(statement).scalars().all()
+    total_count = db.execute(select(func.count()).select_from(Task).where(*filters)).scalar_one()
     items = [_task_response(task) for task in tasks]
-    return TaskListResponse(items=items, count=len(items))
+    return TaskListResponse(items=items, count=int(total_count))
 
 
 @router.post(

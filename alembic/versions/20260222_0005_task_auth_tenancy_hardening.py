@@ -12,6 +12,32 @@ down_revision: str | None = "20260222_0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_RUNTIME_KEY = "bus.redis_fallback_to_inmemory"
+_RUNTIME_DESCRIPTION = (
+    "Fallback to in-memory queue when Redis BUS_BACKEND cannot be reached at startup."
+)
+_runtime_settings = sa.table(
+    "runtime_settings",
+    sa.column("key", sa.String),
+    sa.column("value", sa.String),
+    sa.column("description", sa.String),
+)
+
+
+def _set_runtime_fallback_setting(value: str) -> None:
+    """Idempotently persist the fallback runtime setting value."""
+    op.execute(sa.delete(_runtime_settings).where(_runtime_settings.c.key == _RUNTIME_KEY))
+    op.bulk_insert(
+        _runtime_settings,
+        [
+            {
+                "key": _RUNTIME_KEY,
+                "value": value,
+                "description": _RUNTIME_DESCRIPTION,
+            }
+        ],
+    )
+
 
 def upgrade() -> None:
     """Upgrade schema."""
@@ -47,12 +73,7 @@ def upgrade() -> None:
         batch_op.drop_constraint("uq_users_org_telegram_user_id", type_="unique")
         batch_op.create_unique_constraint("uq_users_telegram_user_id", ["telegram_user_id"])
 
-    op.execute(
-        "UPDATE runtime_settings "
-        "SET value = 'false', description = "
-        "'Fallback to in-memory queue when Redis BUS_BACKEND cannot be reached at startup.' "
-        "WHERE key = 'bus.redis_fallback_to_inmemory'"
-    )
+    _set_runtime_fallback_setting("false")
 
 
 def downgrade() -> None:
@@ -69,9 +90,4 @@ def downgrade() -> None:
         batch_op.drop_constraint("uq_tasks_org_user_idempotency_key", type_="unique")
         batch_op.drop_column("idempotency_key")
 
-    op.execute(
-        "UPDATE runtime_settings "
-        "SET value = 'true', description = "
-        "'Fallback to in-memory queue when Redis BUS_BACKEND cannot be reached at startup.' "
-        "WHERE key = 'bus.redis_fallback_to_inmemory'"
-    )
+    _set_runtime_fallback_setting("true")
