@@ -14,7 +14,7 @@ from agenticai.api.dependencies import get_db_session
 from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
-from agenticai.bus.base import TASK_QUEUE
+from agenticai.bus.base import TASK_QUEUE, EventBus
 from agenticai.core.config import get_settings
 from agenticai.core.observability import log_event
 from agenticai.db.models import (
@@ -64,11 +64,18 @@ def _enqueue_failed_response() -> JSONResponse:
 
 def _response_for_existing_event(
     *,
+    db: Session,
+    bus: EventBus | None,
     payload: TelegramUpdate,
     event: TelegramWebhookEvent,
     duplicate: bool,
 ) -> TelegramWebhookAck | JSONResponse:
     """Replay a deterministic response from persisted webhook outcome."""
+    event = _recover_failed_enqueue_if_possible(
+        db=db,
+        bus=bus,
+        event=event,
+    )
     ack = _build_ack(event, duplicate=duplicate)
     _log_webhook_outcome(
         payload=payload,
@@ -80,6 +87,127 @@ def _response_for_existing_event(
     if event.outcome == TelegramWebhookOutcome.ENQUEUE_FAILED.value:
         return _enqueue_failed_response()
     return ack
+
+
+def _task_enqueue_payload(
+    task: Task,
+    *,
+    telegram_update_id: int,
+    status_override: str | None = None,
+) -> dict[str, object]:
+    """Build a stable queue payload for one task."""
+    return {
+        "task_id": task.id,
+        "org_id": task.org_id,
+        "requested_by_user_id": task.requested_by_user_id,
+        "status": task.status if status_override is None else status_override,
+        "source": "telegram",
+        "telegram_update_id": telegram_update_id,
+    }
+
+
+def _recover_failed_enqueue_if_possible(
+    *,
+    db: Session,
+    bus: EventBus | None,
+    event: TelegramWebhookEvent,
+) -> TelegramWebhookEvent:
+    """Best-effort retry path for duplicate updates that previously failed enqueue."""
+    if event.outcome != TelegramWebhookOutcome.ENQUEUE_FAILED.value:
+        return event
+    if bus is None or event.task_id is None:
+        return event
+
+    task = db.get(Task, event.task_id)
+    if task is None:
+        return event
+
+    previous_status = task.status
+    previous_error_message = task.error_message
+    previous_completed_at = task.completed_at
+    previous_outcome = event.outcome
+    try:
+        recovered_at = datetime.now(UTC)
+        task.status = TaskStatus.QUEUED.value
+        task.error_message = None
+        task.completed_at = None
+        task.updated_at = recovered_at
+        event.outcome = TelegramWebhookOutcome.TASK_ENQUEUED.value
+        db.add(task)
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+    except Exception:
+        db.rollback()
+        task.status = previous_status
+        task.error_message = previous_error_message
+        task.completed_at = previous_completed_at
+        event.outcome = previous_outcome
+        logger.exception(
+            "Failed to persist duplicate enqueue recovery state for update %s and task %s",
+            event.update_id,
+            task.id,
+        )
+        return event
+
+    enqueue_failed = False
+    try:
+        accepted = bus.enqueue(
+            TASK_QUEUE,
+            task.id,
+            _task_enqueue_payload(
+                task,
+                telegram_update_id=event.update_id,
+            ),
+        )
+        enqueue_failed = not accepted
+        if enqueue_failed:
+            log_event(
+                logger,
+                level=logging.WARNING,
+                event="telegram.webhook.enqueue_recovery_duplicate",
+                update_id=event.update_id,
+                task_id=task.id,
+                telegram_user_id=event.telegram_user_id,
+                queue=TASK_QUEUE,
+            )
+    except Exception:
+        enqueue_failed = True
+        logger.exception(
+            "Failed duplicate enqueue recovery for Telegram update %s and task %s",
+            event.update_id,
+            task.id,
+        )
+
+    if enqueue_failed:
+        rollback_time = datetime.now(UTC)
+        task.status = previous_status
+        task.error_message = previous_error_message
+        task.completed_at = previous_completed_at
+        task.updated_at = rollback_time
+        event.outcome = TelegramWebhookOutcome.ENQUEUE_FAILED.value
+        db.add(task)
+        db.add(event)
+        try:
+            db.commit()
+            db.refresh(event)
+        except Exception:
+            logger.exception(
+                "Failed to roll back duplicate enqueue recovery state for update %s and task %s",
+                event.update_id,
+                task.id,
+            )
+        return event
+
+    log_event(
+        logger,
+        event="telegram.webhook.enqueue_recovered",
+        update_id=event.update_id,
+        task_id=task.id,
+        telegram_user_id=event.telegram_user_id,
+        queue=TASK_QUEUE,
+    )
+    return event
 
 
 def _log_webhook_outcome(
@@ -203,11 +331,14 @@ def telegram_webhook(
             message="Invalid Telegram webhook secret",
         )
 
+    bus: EventBus | None = getattr(request.app.state, "bus", None)
     existing_event = db.execute(
         select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == payload.update_id)
     ).scalar_one_or_none()
     if existing_event is not None:
         return _response_for_existing_event(
+            db=db,
+            bus=bus,
             payload=payload,
             event=existing_event,
             duplicate=True,
@@ -274,6 +405,8 @@ def telegram_webhook(
                 ).scalar_one_or_none()
                 if existing_event is not None:
                     return _response_for_existing_event(
+                        db=db,
+                        bus=bus,
                         payload=payload,
                         event=existing_event,
                         duplicate=True,
@@ -325,7 +458,6 @@ def telegram_webhook(
         )
         return ack
 
-    bus = getattr(request.app.state, "bus", None)
     if bus is None:
         return build_error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -362,6 +494,8 @@ def telegram_webhook(
         ).scalar_one_or_none()
         if existing_event is not None:
             return _response_for_existing_event(
+                db=db,
+                bus=bus,
                 payload=payload,
                 event=existing_event,
                 duplicate=True,
@@ -372,14 +506,7 @@ def telegram_webhook(
         accepted = bus.enqueue(
             TASK_QUEUE,
             task.id,
-            {
-                "task_id": task.id,
-                "org_id": task.org_id,
-                "requested_by_user_id": task.requested_by_user_id,
-                "status": task.status,
-                "source": "telegram",
-                "telegram_update_id": payload.update_id,
-            },
+            _task_enqueue_payload(task, telegram_update_id=payload.update_id),
         )
     except Exception:
         accepted = False

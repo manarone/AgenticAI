@@ -159,6 +159,31 @@ def test_coordinator_transitions_task_to_failed_with_adapter_error(
         assert payload["error_message"] == "Planner rejected prompt"
 
 
+def test_coordinator_requeues_message_when_mark_running_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Transient transition errors should requeue work instead of dropping it."""
+    with _coordinator_client(monkeypatch, tmp_path) as client:
+        coordinator = client.app.state.coordinator
+        assert coordinator is not None
+
+        mark_running_calls = {"count": 0}
+        original_mark_task_running = coordinator._mark_task_running
+
+        def flaky_mark_task_running(task_id: str) -> PlannerExecutorHandoff | None:
+            mark_running_calls["count"] += 1
+            if mark_running_calls["count"] == 1:
+                raise RuntimeError("transient transition failure")
+            return original_mark_task_running(task_id)
+
+        monkeypatch.setattr(coordinator, "_mark_task_running", flaky_mark_task_running)
+
+        task_id = _create_task(client, "recover from transition failure")
+        payload = _wait_for_status(client, task_id, "SUCCEEDED")
+        assert payload["error_message"] is None
+        assert mark_running_calls["count"] >= 2
+
+
 def test_coordinator_preserves_canceled_tasks_during_execution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

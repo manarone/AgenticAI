@@ -156,7 +156,15 @@ class CoordinatorWorker:
             )
             return
 
-        handoff = await asyncio.to_thread(self._mark_task_running, raw_task_id)
+        try:
+            handoff = await asyncio.to_thread(self._mark_task_running, raw_task_id)
+        except Exception:
+            logger.exception(
+                "Failed to transition task %s to RUNNING; requeueing message",
+                raw_task_id,
+            )
+            await asyncio.to_thread(self._requeue_message, message)
+            return
         if handoff is None:
             return
 
@@ -180,6 +188,47 @@ class CoordinatorWorker:
         )
 
         await asyncio.to_thread(self._finalize_task, handoff.task_id, result)
+
+    def _requeue_message(self, message: QueuedMessage) -> None:
+        """Best-effort requeue for transient failures before execution starts."""
+        job_id = message.get("job_id")
+        payload = message.get("payload")
+        if not isinstance(job_id, str) or not isinstance(payload, dict):
+            log_event(
+                logger,
+                level=logging.WARNING,
+                event="queue.tasks.requeue_invalid_message",
+                queue=TASK_QUEUE,
+                message=message,
+            )
+            return
+
+        try:
+            accepted = self._bus.enqueue(TASK_QUEUE, job_id, payload)
+        except Exception:
+            logger.exception(
+                "Failed to requeue message for task %s after transition failure",
+                payload.get("task_id"),
+            )
+            return
+
+        if accepted:
+            log_event(
+                logger,
+                event="queue.tasks.requeued",
+                queue=TASK_QUEUE,
+                task_id=payload.get("task_id"),
+                job_id=job_id,
+            )
+            return
+        log_event(
+            logger,
+            level=logging.WARNING,
+            event="queue.tasks.requeue_duplicate",
+            queue=TASK_QUEUE,
+            task_id=payload.get("task_id"),
+            job_id=job_id,
+        )
 
     async def _execute_handoff(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
         execute = self._adapter.execute
