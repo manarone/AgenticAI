@@ -33,6 +33,19 @@ def test_readyz_not_ready_without_bus(client) -> None:
     assert response.json() == {"status": "not_ready", "bus_backend": "inmemory"}
 
 
+def test_readyz_not_ready_when_bus_ping_fails(client) -> None:
+    """Readiness returns 503 when the queue backend reports unhealthy."""
+
+    class UnhealthyBus:
+        def ping(self) -> bool:
+            return False
+
+    client.app.state.bus = UnhealthyBus()
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "bus_backend": "inmemory"}
+
+
 def test_list_tasks(client) -> None:
     """Task listing starts empty in a fresh test database."""
     response = client.get("/v1/tasks")
@@ -58,6 +71,33 @@ def test_create_task(client, seeded_identity) -> None:
     assert payload["created_at"]
     assert payload["updated_at"]
     assert payload["completed_at"] is None
+    queued_messages = client.app.state.bus.dequeue("tasks", limit=10)
+    assert len(queued_messages) == 1
+    assert queued_messages[0]["job_id"] == payload["task_id"]
+    assert queued_messages[0]["payload"]["task_id"] == payload["task_id"]
+
+
+def test_create_task_returns_503_when_queue_unavailable(client, seeded_identity) -> None:
+    """Task creation returns structured error when queue enqueue fails."""
+
+    def broken_enqueue(_queue: str, _job_id: str, _payload: dict[str, object]) -> bool:
+        raise RuntimeError("redis unavailable")
+
+    client.app.state.bus.enqueue = broken_enqueue
+    response = client.post(
+        "/v1/tasks",
+        json={
+            **seeded_identity,
+            "prompt": "queue this task",
+        },
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "TASK_QUEUE_UNAVAILABLE",
+            "message": "Task was created but queue backend is currently unavailable",
+        }
+    }
 
 
 def test_get_task(client, seeded_identity) -> None:

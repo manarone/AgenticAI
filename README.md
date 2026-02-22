@@ -74,7 +74,8 @@ Current scaffold endpoints:
 ## Deployment notes
 
 - Container entrypoint serves on port `8000`
-- Set `BUS_BACKEND=inmemory` unless Redis bus is wired
+- Supported queue backends: `inmemory` (default) and `redis`
+- Set `BUS_BACKEND=redis` and `REDIS_URL=redis://host:6379/0` to enable Redis queues
 - Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
 - Health check path: `/healthz`
 - Run `alembic upgrade head` against the target database before restarting or rolling out.

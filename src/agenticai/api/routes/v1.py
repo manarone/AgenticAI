@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -7,17 +8,20 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from agenticai.api.dependencies import get_db_session
+from agenticai.api.dependencies import get_db_session, get_event_bus
 from agenticai.api.schemas.tasks import (
     ErrorResponse,
     TaskCreateRequest,
     TaskListResponse,
     TaskResponse,
 )
+from agenticai.bus.base import TASK_QUEUE, EventBus
 from agenticai.db.models import Task, TaskStatus
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 DBSession = Annotated[Session, Depends(get_db_session)]
+EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
+logger = logging.getLogger(__name__)
 
 
 TERMINAL_STATUSES = {
@@ -74,11 +78,15 @@ def list_tasks(db: DBSession) -> TaskListResponse:
     "/tasks",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=TaskResponse,
-    responses={400: {"model": ErrorResponse}},
+    responses={
+        400: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
 )
 def create_task(
     payload: TaskCreateRequest,
     db: DBSession,
+    bus: EventBusDep,
 ) -> TaskResponse | JSONResponse:
     """Create and persist a queued task."""
     now = datetime.now(UTC)
@@ -101,6 +109,24 @@ def create_task(
             message="org_id or requested_by_user_id does not exist",
         )
     db.refresh(task)
+    try:
+        bus.enqueue(
+            TASK_QUEUE,
+            task.id,
+            {
+                "task_id": task.id,
+                "org_id": task.org_id,
+                "requested_by_user_id": task.requested_by_user_id,
+                "status": task.status,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to enqueue task %s", task.id)
+        return _error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="TASK_QUEUE_UNAVAILABLE",
+            message="Task was created but queue backend is currently unavailable",
+        )
     return _task_response(task)
 
 
