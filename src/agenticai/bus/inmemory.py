@@ -57,8 +57,11 @@ class InMemoryBus(EventBus):
             queue = self._topics[topic]
             if not queue:
                 return []
-            messages = [message["payload"] for message in queue]
-            ids = [message["job_id"] for message in queue]
+            messages: list[dict[str, object]] = []
+            ids: list[str] = []
+            for message in queue:
+                messages.append(message["payload"])
+                ids.append(message["job_id"])
             queue.clear()
             queue_ids = self._ids_by_queue[topic]
             for job_id in ids:
