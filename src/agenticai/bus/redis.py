@@ -124,7 +124,6 @@ class RedisBus(EventBus):
                 lambda job_key=job_key: self._client.get(job_key)
             )
             if raw_message is None:
-                self._execute_with_retry(lambda job_key=job_key: self._client.delete(job_key))
                 continue
 
             try:

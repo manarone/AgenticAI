@@ -59,6 +59,7 @@ def test_webhook_rejects_invalid_secret(client) -> None:
 
 def test_webhook_returns_503_when_secret_not_configured_and_insecure_not_allowed(client) -> None:
     """Webhook should fail closed when secret is missing and insecure mode is disabled."""
+    # Intentional test-only settings override for this scenario.
     client.app.state.settings.telegram_webhook_secret = None
     client.app.state.settings.allow_insecure_telegram_webhook = False
     response = client.post(

@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies."""
 
+import hmac
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Annotated
@@ -86,7 +87,7 @@ def get_task_api_principal(
             )
     else:
         presented_token = _parse_bearer_token(authorization)
-        if presented_token != expected_token:
+        if presented_token is None or not hmac.compare_digest(presented_token, expected_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={

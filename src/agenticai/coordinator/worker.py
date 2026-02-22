@@ -13,28 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.bus.base import TASK_QUEUE, EventBus, QueuedMessage
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.core.observability import log_event
 from agenticai.db.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
-
-try:
-    from redis.exceptions import RedisError
-
-    WORKER_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    WORKER_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
+WORKER_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 @dataclass(frozen=True)
@@ -148,7 +132,14 @@ class CoordinatorWorker:
 
     async def run_once(self) -> int:
         """Process at most one batch of queued task messages."""
-        await asyncio.to_thread(self._run_recovery_if_due)
+        try:
+            await asyncio.to_thread(self._run_recovery_if_due)
+        except asyncio.CancelledError:
+            raise
+        except WORKER_EXCEPTIONS:
+            logger.exception("Recovery scan failed; continuing with dequeue loop")
+        except Exception:
+            logger.exception("Recovery scan failed with unexpected error; continuing")
         try:
             messages = await asyncio.to_thread(
                 self._bus.dequeue,

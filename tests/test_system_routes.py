@@ -294,6 +294,37 @@ def test_create_task_returns_503_when_queue_unavailable(client, task_api_headers
     )
 
 
+def test_idempotency_replay_of_failed_task_returns_error(client, task_api_headers) -> None:
+    """Replaying a failed idempotency key should return a non-2xx error."""
+
+    def broken_enqueue(_queue: str, _job_id: str, _payload: dict[str, object]) -> bool:
+        raise RuntimeError("redis unavailable")
+
+    client.app.state.bus.enqueue = broken_enqueue
+    first = client.post(
+        "/v1/tasks",
+        headers={**task_api_headers, "Idempotency-Key": "failed-key-1"},
+        json={"prompt": "queue this task"},
+    )
+    assert first.status_code == 503
+
+    second = client.post(
+        "/v1/tasks",
+        headers={**task_api_headers, "Idempotency-Key": "failed-key-1"},
+        json={"prompt": "queue this task"},
+    )
+    assert second.status_code == 503
+    assert second.json() == {
+        "error": {
+            "code": "TASK_PREVIOUS_ATTEMPT_FAILED",
+            "message": (
+                "A previous request with this Idempotency-Key failed. "
+                "Use a new Idempotency-Key to retry."
+            ),
+        }
+    }
+
+
 def test_get_task(client, task_api_headers) -> None:
     """Created tasks can be fetched by id."""
     create_response = client.post(

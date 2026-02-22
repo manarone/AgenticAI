@@ -2,30 +2,14 @@ import logging
 from typing import cast
 
 from agenticai.bus.base import EventBus
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.failover import RedisFailoverBus
 from agenticai.bus.inmemory import InMemoryBus
 from agenticai.bus.redis import RedisBus
 from agenticai.core.config import Settings
 
 logger = logging.getLogger(__name__)
-
-try:
-    from redis.exceptions import RedisError
-
-    BUS_FACTORY_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    BUS_FACTORY_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
+BUS_FACTORY_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 def _close_bus_quietly(bus: EventBus) -> None:

@@ -23,6 +23,26 @@ def upgrade() -> None:
         )
         batch_op.create_index("ix_tasks_idempotency_key", ["idempotency_key"], unique=False)
 
+    duplicate_telegram_users = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT telegram_user_id "
+                "FROM users "
+                "GROUP BY telegram_user_id "
+                "HAVING COUNT(DISTINCT org_id) > 1 "
+                "LIMIT 5"
+            )
+        )
+        .fetchall()
+    )
+    if duplicate_telegram_users:
+        duplicate_ids = ", ".join(str(row[0]) for row in duplicate_telegram_users)
+        raise RuntimeError(
+            "Cannot enforce global telegram_user_id uniqueness. "
+            f"Resolve duplicate IDs first: {duplicate_ids}"
+        )
+
     with op.batch_alter_table("users") as batch_op:
         batch_op.drop_constraint("uq_users_org_telegram_user_id", type_="unique")
         batch_op.create_unique_constraint("uq_users_telegram_user_id", ["telegram_user_id"])

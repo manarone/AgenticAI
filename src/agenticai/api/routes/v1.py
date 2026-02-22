@@ -22,6 +22,7 @@ from agenticai.api.schemas.tasks import (
     TaskResponse,
 )
 from agenticai.bus.base import TASK_QUEUE, EventBus
+from agenticai.bus.exceptions import QUEUE_EXCEPTIONS
 from agenticai.core.observability import log_event
 from agenticai.db.models import Task, TaskStatus
 
@@ -29,24 +30,6 @@ router = APIRouter(prefix="/v1", tags=["v1"])
 DBSession = Annotated[Session, Depends(get_db_session)]
 EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
 logger = logging.getLogger(__name__)
-
-try:
-    from redis.exceptions import RedisError
-
-    QUEUE_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    QUEUE_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
 
 
 TERMINAL_STATUSES = {
@@ -72,6 +55,29 @@ def _task_response(task: Task) -> TaskResponse:
         started_at=task.started_at,
         completed_at=task.completed_at,
     )
+
+
+def _idempotency_replay_response(task: Task) -> TaskResponse | JSONResponse:
+    """Build replay response for an existing idempotency-key task."""
+    if task.status == TaskStatus.FAILED.value:
+        return build_error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="TASK_PREVIOUS_ATTEMPT_FAILED",
+            message=(
+                "A previous request with this Idempotency-Key failed. "
+                "Use a new Idempotency-Key to retry."
+            ),
+        )
+    if task.status in {TaskStatus.CANCELED.value, TaskStatus.TIMED_OUT.value}:
+        return build_error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            code="TASK_IDEMPOTENCY_KEY_TERMINAL",
+            message=(
+                f"A previous request with this Idempotency-Key reached terminal status "
+                f"'{task.status}'"
+            ),
+        )
+    return _task_response(task)
 
 
 @router.get("/tasks", response_model=TaskListResponse)
@@ -104,6 +110,7 @@ def list_tasks(
     responses={
         400: {"model": ErrorResponse},
         401: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )
@@ -132,7 +139,7 @@ def create_task(
             )
         ).scalar_one_or_none()
         if existing_task is not None:
-            return _task_response(existing_task)
+            return _idempotency_replay_response(existing_task)
 
     now = datetime.now(UTC)
     task = Task(
@@ -158,7 +165,7 @@ def create_task(
                 )
             ).scalar_one_or_none()
             if existing_task is not None:
-                return _task_response(existing_task)
+                return _idempotency_replay_response(existing_task)
         return build_error_response(
             status_code=status.HTTP_400_BAD_REQUEST,
             code="TASK_CREATE_INVALID_REFERENCE",

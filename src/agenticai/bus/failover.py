@@ -2,26 +2,10 @@ import logging
 from threading import Lock
 
 from agenticai.bus.base import EventBus, QueuedMessage
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
-
-try:
-    from redis.exceptions import RedisError
-
-    FAILOVER_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    FAILOVER_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
+FAILOVER_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 class RedisFailoverBus(EventBus):

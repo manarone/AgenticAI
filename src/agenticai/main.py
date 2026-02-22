@@ -5,8 +5,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy.exc import SQLAlchemyError
 
 from agenticai.api.router import api_router
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.factory import create_bus
 from agenticai.coordinator import CoordinatorWorker, PlannerExecutorAdapter
 from agenticai.core.config import get_settings
@@ -16,6 +18,7 @@ from agenticai.db.session import build_engine, build_session_factory
 
 logger = logging.getLogger(__name__)
 RESOURCE_CLOSE_TIMEOUT_SECONDS = 5
+RESOURCE_CLOSE_EXCEPTIONS = BUS_EXCEPTIONS + (SQLAlchemyError,)
 
 
 async def _close_resource(resource: object) -> None:
@@ -35,7 +38,7 @@ async def _close_resource(resource: object) -> None:
                 method_name,
                 RESOURCE_CLOSE_TIMEOUT_SECONDS,
             )
-        except (RuntimeError, OSError):
+        except RESOURCE_CLOSE_EXCEPTIONS:
             logger.exception("Failed to close resource via '%s'", method_name)
         return
 
@@ -88,7 +91,7 @@ def create_app(
         if engine is not None:
             try:
                 engine.dispose()
-            except (RuntimeError, OSError):
+            except (RuntimeError, OSError, SQLAlchemyError):
                 logger.exception("Failed to dispose database engine")
         app.state.db_engine = None
         app.state.db_session_factory = None

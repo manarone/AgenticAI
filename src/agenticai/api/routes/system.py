@@ -6,27 +6,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.core.config import get_settings
 
 router = APIRouter(tags=["system"])
-
-try:
-    from redis.exceptions import RedisError
-
-    BUS_HEALTH_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    BUS_HEALTH_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
+BUS_HEALTH_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 def _effective_bus_backend(bus: object, configured_backend: str) -> str:

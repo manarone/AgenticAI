@@ -15,6 +15,7 @@ from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
 from agenticai.bus.base import TASK_QUEUE, EventBus
+from agenticai.bus.exceptions import QUEUE_EXCEPTIONS
 from agenticai.core.config import get_settings
 from agenticai.core.observability import log_event
 from agenticai.db.models import (
@@ -29,24 +30,6 @@ from agenticai.db.models import (
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 DBSession = Annotated[Session, Depends(get_db_session)]
 logger = logging.getLogger(__name__)
-
-try:
-    from redis.exceptions import RedisError
-
-    QUEUE_EXCEPTIONS: tuple[type[Exception], ...] = (
-        RedisError,
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
-except ImportError:
-    QUEUE_EXCEPTIONS = (
-        RuntimeError,
-        TimeoutError,
-        ConnectionError,
-        OSError,
-    )
 
 
 def _ack_status(outcome: str) -> str:
@@ -435,6 +418,8 @@ def telegram_webhook(
                         event=existing_event,
                         duplicate=True,
                     )
+                # Concurrent registration can insert this user first; continue into
+                # normal message handling so concurrent `/start` resolves to IGNORED.
                 user = db.execute(
                     select(User).where(User.telegram_user_id == telegram_user_id).limit(1)
                 ).scalar_one_or_none()
