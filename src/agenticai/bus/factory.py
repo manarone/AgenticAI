@@ -10,6 +10,19 @@ from agenticai.core.config import Settings
 logger = logging.getLogger(__name__)
 
 
+def _close_bus_quietly(bus: EventBus) -> None:
+    close = getattr(bus, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.warning(
+            "Failed to close Redis bus after startup health check fallback",
+            exc_info=True,
+        )
+
+
 def create_bus(
     settings: Settings,
     *,
@@ -40,6 +53,7 @@ def create_bus(
                 "Redis BUS_BACKEND initialization failed at startup; falling back to in-memory bus",
                 exc_info=True,
             )
+        _close_bus_quietly(redis_bus)
         return fallback_bus
 
     raise ValueError(f"Unsupported BUS_BACKEND: {settings.bus_backend}")

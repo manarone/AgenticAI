@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agenticai.api.dependencies import get_db_session
+from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
 from agenticai.bus.base import TASK_QUEUE
@@ -28,19 +29,6 @@ from agenticai.db.models import (
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 DBSession = Annotated[Session, Depends(get_db_session)]
 logger = logging.getLogger(__name__)
-
-
-def _error_response(*, status_code: int, code: str, message: str) -> JSONResponse:
-    """Build a structured error payload."""
-    payload = ErrorResponse.model_validate(
-        {
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        }
-    )
-    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
 
 
 def _ack_status(outcome: str) -> str:
@@ -67,7 +55,7 @@ def _build_ack(event: TelegramWebhookEvent, *, duplicate: bool) -> TelegramWebho
 
 def _enqueue_failed_response() -> JSONResponse:
     """Build queue failure response for deterministic retries."""
-    return _error_response(
+    return build_error_response(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         code="TASK_QUEUE_UNAVAILABLE",
         message="Task enqueue failed because the queue backend is unavailable",
@@ -209,7 +197,7 @@ def telegram_webhook(
             "Set TELEGRAM_WEBHOOK_SECRET to secure webhook ingress."
         )
     elif webhook_secret != expected_secret.get_secret_value():
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="TELEGRAM_WEBHOOK_UNAUTHORIZED",
             message="Invalid Telegram webhook secret",
@@ -339,7 +327,7 @@ def telegram_webhook(
 
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
-        return _error_response(
+        return build_error_response(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             code="TASK_QUEUE_UNAVAILABLE",
             message="Task queue bus is unavailable",

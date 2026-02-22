@@ -46,9 +46,11 @@ def test_startup_reads_runtime_bus_fallback_override(
 
     monkeypatch.setattr("agenticai.main.create_bus", fake_create_bus)
 
-    with TestClient(create_app(start_coordinator=False)):
-        pass
+    try:
+        with TestClient(create_app(start_coordinator=False)):
+            pass
 
-    assert captured["backend"] == "redis"
-    assert captured["redis_fallback_to_inmemory"] is False
-    get_settings.cache_clear()
+        assert captured["backend"] == "redis"
+        assert captured["redis_fallback_to_inmemory"] is False
+    finally:
+        get_settings.cache_clear()

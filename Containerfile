@@ -7,8 +7,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md /app/
-COPY alembic.ini /app/
-COPY alembic /app/alembic
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
@@ -18,6 +16,8 @@ RUN apt-get update && \
 
 COPY src /app/src
 RUN pip install --no-deps .
+COPY alembic.ini /app/
+COPY alembic /app/alembic
 
 RUN groupadd --system appgroup && \
     useradd --system --gid appgroup --create-home --home-dir /home/appuser appuser && \
@@ -31,4 +31,4 @@ ENV HOST=0.0.0.0 \
 
 USER appuser
 
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]
+CMD ["sh", "-c", "i=0; until alembic upgrade head; do i=$((i+1)); if [ \"$i\" -ge 15 ]; then echo 'alembic upgrade failed after retries'; exit 1; fi; echo \"Retrying alembic upgrade ($i/15)\"; sleep 2; done; exec uvicorn agenticai.main:app --host ${HOST} --port ${PORT} --app-dir /app/src"]

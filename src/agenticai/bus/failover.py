@@ -1,4 +1,5 @@
 import logging
+from threading import Lock
 
 from agenticai.bus.base import EventBus, QueuedMessage
 
@@ -12,11 +13,13 @@ class RedisFailoverBus(EventBus):
         self._primary = primary
         self._fallback = fallback
         self._use_fallback = False
+        self._fallback_lock = Lock()
 
     def _activate_fallback(self, *, operation: str, error: Exception | None = None) -> None:
-        if self._use_fallback:
-            return
-        self._use_fallback = True
+        with self._fallback_lock:
+            if self._use_fallback:
+                return
+            self._use_fallback = True
         if error is None:
             logger.warning(
                 "Switching queue bus from redis to in-memory fallback after %s signaled unhealthy",
@@ -83,4 +86,7 @@ class RedisFailoverBus(EventBus):
         for bus in (self._primary, self._fallback):
             close = getattr(bus, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    logger.warning("Failed to close queue bus during shutdown", exc_info=True)
