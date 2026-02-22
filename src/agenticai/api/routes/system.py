@@ -2,6 +2,8 @@ import inspect
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.core.config import get_settings
 
@@ -24,7 +26,7 @@ def healthz() -> dict[str, str]:
 
 @router.get("/readyz")
 async def readyz(request: Request) -> JSONResponse:
-    """Readiness probe that checks app state and bus availability."""
+    """Readiness probe that checks app state, bus availability, and DB connectivity."""
     settings = getattr(request.app.state, "settings", None)
     if settings is None:
         settings = get_settings()
@@ -43,6 +45,19 @@ async def readyz(request: Request) -> JSONResponse:
                 return _not_ready_response(settings.bus_backend)
         except Exception:
             return _not_ready_response(settings.bus_backend)
+
+    session_factory: sessionmaker[Session] | None = getattr(
+        request.app.state,
+        "db_session_factory",
+        None,
+    )
+    if session_factory is None:
+        return _not_ready_response(settings.bus_backend)
+    try:
+        with session_factory() as session:
+            session.execute(text("SELECT 1"))
+    except Exception:
+        return _not_ready_response(settings.bus_backend)
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,

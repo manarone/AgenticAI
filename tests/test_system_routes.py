@@ -46,6 +46,34 @@ def test_readyz_not_ready_when_bus_ping_fails(client) -> None:
     assert response.json() == {"status": "not_ready", "bus_backend": "inmemory"}
 
 
+def test_readyz_not_ready_without_db_session_factory(client) -> None:
+    """Readiness returns 503 when database session factory is unavailable."""
+    client.app.state.db_session_factory = None
+
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "bus_backend": "inmemory"}
+
+
+def test_readyz_not_ready_when_db_check_fails(client) -> None:
+    """Readiness returns 503 when the DB liveness query fails."""
+
+    class BrokenSession:
+        def __enter__(self) -> "BrokenSession":
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+        def execute(self, *_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("database unavailable")
+
+    client.app.state.db_session_factory = lambda: BrokenSession()
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"status": "not_ready", "bus_backend": "inmemory"}
+
+
 def test_list_tasks(client) -> None:
     """Task listing starts empty in a fresh test database."""
     response = client.get("/v1/tasks")

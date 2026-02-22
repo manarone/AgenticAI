@@ -193,3 +193,49 @@ def test_webhook_returns_503_when_queue_unavailable(client) -> None:
             "message": "Task enqueue failed because the queue backend is unavailable",
         }
     }
+
+
+def test_webhook_duplicate_recovers_previous_enqueue_failure(client) -> None:
+    """Duplicate delivery should recover prior ENQUEUE_FAILED outcomes when queue returns."""
+
+    def broken_enqueue(_queue: str, _job_id: str, _payload: dict[str, object]) -> bool:
+        raise RuntimeError("queue backend unavailable")
+
+    original_enqueue = client.app.state.bus.enqueue
+    client.app.state.bus.enqueue = broken_enqueue
+    update_payload = _message_update(update_id=5002, telegram_user_id=123456789, text="retry me")
+    first = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=update_payload,
+    )
+    assert first.status_code == 503
+
+    client.app.state.bus.enqueue = original_enqueue
+    duplicate = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=update_payload,
+    )
+    assert duplicate.status_code == 200
+    duplicate_payload = duplicate.json()
+    assert duplicate_payload["ok"] is True
+    assert duplicate_payload["status"] == "accepted"
+    assert duplicate_payload["duplicate"] is True
+    assert duplicate_payload["task_id"] is not None
+
+    with Session(bind=client.app.state.db_engine) as session:
+        task = session.get(Task, duplicate_payload["task_id"])
+        assert task is not None
+        assert task.status == "QUEUED"
+        assert task.error_message is None
+        assert task.completed_at is None
+
+        event = session.execute(
+            select(TelegramWebhookEvent).where(TelegramWebhookEvent.update_id == 5002)
+        ).scalar_one()
+        assert event.outcome == "TASK_ENQUEUED"
+
+    queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
+    assert len(queued_messages) == 1
+    assert queued_messages[0]["job_id"] == duplicate_payload["task_id"]
