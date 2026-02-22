@@ -10,8 +10,6 @@ from agenticai.db.models import TaskStatus
 class TaskCreateRequest(BaseModel):
     """Payload accepted by task creation endpoint."""
 
-    org_id: str = Field(min_length=1, max_length=36)
-    requested_by_user_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1)
 
 
@@ -34,7 +32,7 @@ class TaskListResponse(BaseModel):
     """Response payload for task listing."""
 
     items: list[TaskResponse]
-    count: int
+    count: int  # Total matching tasks for the applied filters.
 
 
 class ErrorDetail(BaseModel):

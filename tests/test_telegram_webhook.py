@@ -57,6 +57,26 @@ def test_webhook_rejects_invalid_secret(client) -> None:
     }
 
 
+def test_webhook_returns_503_when_secret_not_configured_and_insecure_not_allowed(client) -> None:
+    """Webhook should fail closed when secret is missing and insecure mode is disabled."""
+    # Intentional test-only settings override for this scenario.
+    client.app.state.settings.telegram_webhook_secret = None
+    client.app.state.settings.allow_insecure_telegram_webhook = False
+    response = client.post(
+        WEBHOOK_PATH,
+        json=_message_update(update_id=1003, telegram_user_id=123456789, text="hello"),
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "TELEGRAM_WEBHOOK_MISCONFIGURED",
+            "message": (
+                "TELEGRAM_WEBHOOK_SECRET is required unless ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
+            ),
+        }
+    }
+
+
 def test_webhook_is_idempotent_for_duplicate_delivery(client, seeded_identity) -> None:
     """Same Telegram update_id must not enqueue duplicate tasks."""
     payload = _message_update(update_id=2001, telegram_user_id=123456789, text="plan release")
@@ -129,6 +149,38 @@ def test_webhook_start_with_invite_registers_user(client) -> None:
 
     queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
     assert queued_messages == []
+
+
+def test_webhook_start_does_not_reassign_existing_telegram_user_to_new_org(client) -> None:
+    """Existing Telegram users remain bound to their original org even with a new invite code."""
+    second_org_id = str(uuid4())
+    with Session(bind=client.app.state.db_engine) as session:
+        session.add(Organization(id=second_org_id, slug="other-org", name="Other Org"))
+        session.commit()
+
+    response = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=_message_update(
+            update_id=3002,
+            telegram_user_id=123456789,
+            text="/start other-org",
+        ),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "status": "ignored",
+        "update_id": 3002,
+        "duplicate": False,
+        "task_id": None,
+    }
+
+    with Session(bind=client.app.state.db_engine) as session:
+        users = (
+            session.execute(select(User).where(User.telegram_user_id == 123456789)).scalars().all()
+        )
+    assert len(users) == 1
 
 
 def test_webhook_unknown_user_without_invite_requires_registration(client) -> None:

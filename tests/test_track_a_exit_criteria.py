@@ -19,6 +19,11 @@ WEBHOOK_SECRET_HEADER = {"X-Telegram-Bot-Api-Secret-Token": "track-a-secret"}
 TRACK_A_ORG_ID = "00000000-0000-0000-0000-000000000101"
 TRACK_A_USER_ID = "00000000-0000-0000-0000-000000000102"
 TRACK_A_TELEGRAM_USER_ID = 222333444
+TRACK_A_TASK_API_AUTH_TOKEN = "track-a-task-api-token"
+TRACK_A_TASK_HEADERS = {
+    "Authorization": f"Bearer {TRACK_A_TASK_API_AUTH_TOKEN}",
+    "X-Actor-User-Id": TRACK_A_USER_ID,
+}
 
 
 @pytest.fixture
@@ -32,6 +37,7 @@ def track_a_client(
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
     monkeypatch.setenv("BUS_BACKEND", "inmemory")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TRACK_A_TASK_API_AUTH_TOKEN)
     get_settings.cache_clear()
 
     engine = build_engine(database_url)
@@ -84,7 +90,7 @@ def _wait_for_terminal_status(
     deadline = time.monotonic() + timeout_seconds
     last_payload: dict[str, object] | None = None
     while time.monotonic() < deadline:
-        response = client.get(f"/v1/tasks/{task_id}")
+        response = client.get(f"/v1/tasks/{task_id}", headers=TRACK_A_TASK_HEADERS)
         assert response.status_code == 200
         payload = response.json()
         last_payload = payload

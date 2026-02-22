@@ -2,12 +2,14 @@ import logging
 from typing import cast
 
 from agenticai.bus.base import EventBus
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.failover import RedisFailoverBus
 from agenticai.bus.inmemory import InMemoryBus
 from agenticai.bus.redis import RedisBus
 from agenticai.core.config import Settings
 
 logger = logging.getLogger(__name__)
+BUS_FACTORY_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 def _close_bus_quietly(bus: EventBus) -> None:
@@ -16,7 +18,7 @@ def _close_bus_quietly(bus: EventBus) -> None:
         return
     try:
         close()
-    except Exception:
+    except BUS_FACTORY_EXCEPTIONS:
         logger.warning(
             "Failed to close Redis bus after startup health check fallback",
             exc_info=True,
@@ -48,7 +50,7 @@ def create_bus(
             logger.warning(
                 "Redis BUS_BACKEND health check failed at startup; falling back to in-memory bus"
             )
-        except Exception:
+        except BUS_FACTORY_EXCEPTIONS:
             logger.warning(
                 "Redis BUS_BACKEND initialization failed at startup; falling back to in-memory bus",
                 exc_info=True,

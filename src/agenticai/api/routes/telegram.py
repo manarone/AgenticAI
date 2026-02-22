@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from agenticai.api.dependencies import get_db_session
@@ -15,6 +15,7 @@ from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import ErrorResponse
 from agenticai.api.schemas.telegram import TelegramMessage, TelegramUpdate, TelegramWebhookAck
 from agenticai.bus.base import TASK_QUEUE, EventBus
+from agenticai.bus.exceptions import QUEUE_EXCEPTIONS
 from agenticai.core.config import get_settings
 from agenticai.core.observability import log_event
 from agenticai.db.models import (
@@ -137,7 +138,7 @@ def _recover_failed_enqueue_if_possible(
         db.add(event)
         db.commit()
         db.refresh(event)
-    except Exception:
+    except SQLAlchemyError:
         db.rollback()
         task.status = previous_status
         task.error_message = previous_error_message
@@ -171,7 +172,7 @@ def _recover_failed_enqueue_if_possible(
                 telegram_user_id=event.telegram_user_id,
                 queue=TASK_QUEUE,
             )
-    except Exception:
+    except QUEUE_EXCEPTIONS:
         enqueue_failed = True
         logger.exception(
             "Failed duplicate enqueue recovery for Telegram update %s and task %s",
@@ -191,7 +192,7 @@ def _recover_failed_enqueue_if_possible(
         try:
             db.commit()
             db.refresh(event)
-        except Exception:
+        except SQLAlchemyError:
             logger.exception(
                 "Failed to roll back duplicate enqueue recovery state for update %s and task %s",
                 event.update_id,
@@ -320,9 +321,18 @@ def telegram_webhook(
 
     expected_secret = settings.telegram_webhook_secret
     if expected_secret is None:
+        if not settings.allow_insecure_telegram_webhook:
+            return build_error_response(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                code="TELEGRAM_WEBHOOK_MISCONFIGURED",
+                message=(
+                    "TELEGRAM_WEBHOOK_SECRET is required unless "
+                    "ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
+                ),
+            )
         logger.warning(
-            "TELEGRAM_WEBHOOK_SECRET is not configured; /telegram/webhook is unauthenticated. "
-            "Set TELEGRAM_WEBHOOK_SECRET to secure webhook ingress."
+            "TELEGRAM_WEBHOOK_SECRET is not configured; /telegram/webhook is explicitly running "
+            "without authentication because ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
         )
     elif webhook_secret != expected_secret.get_secret_value():
         return build_error_response(
@@ -367,10 +377,7 @@ def telegram_webhook(
     message_text = message.text.strip() if message.text else None
 
     user = db.execute(
-        select(User)
-        .where(User.telegram_user_id == telegram_user_id)
-        .order_by(User.created_at.asc())
-        .limit(1)
+        select(User).where(User.telegram_user_id == telegram_user_id).limit(1)
     ).scalar_one_or_none()
 
     invite_code = _parse_invite_code(message_text)
@@ -411,16 +418,23 @@ def telegram_webhook(
                         event=existing_event,
                         duplicate=True,
                     )
-                raise
-            ack = _build_ack(event, duplicate=False)
-            _log_webhook_outcome(
-                payload=payload,
-                outcome=ack.status,
-                duplicate=ack.duplicate,
-                telegram_user_id=event.telegram_user_id,
-                task_id=event.task_id,
-            )
-            return ack
+                # Concurrent registration can insert this user first; continue into
+                # normal message handling so concurrent `/start` resolves to IGNORED.
+                user = db.execute(
+                    select(User).where(User.telegram_user_id == telegram_user_id).limit(1)
+                ).scalar_one_or_none()
+                if user is None:
+                    raise
+            else:
+                ack = _build_ack(event, duplicate=False)
+                _log_webhook_outcome(
+                    payload=payload,
+                    outcome=ack.status,
+                    duplicate=ack.duplicate,
+                    telegram_user_id=event.telegram_user_id,
+                    task_id=event.task_id,
+                )
+                return ack
 
     if user is None:
         event, duplicate = _store_event(
@@ -508,7 +522,7 @@ def telegram_webhook(
             task.id,
             _task_enqueue_payload(task, telegram_update_id=payload.update_id),
         )
-    except Exception:
+    except QUEUE_EXCEPTIONS:
         accepted = False
         logger.exception("Failed to enqueue task %s from Telegram webhook", task.id)
 

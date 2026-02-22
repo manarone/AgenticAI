@@ -8,8 +8,10 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from agenticai.bus.base import EventBus, QueuedMessage, payload_job_id
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 
 logger = logging.getLogger(__name__)
+REDIS_BACKEND_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 class RedisBus(EventBus):
@@ -83,11 +85,11 @@ class RedisBus(EventBus):
 
         try:
             self._execute_with_retry(lambda: self._client.rpush(queue_key, job_id))
-        except Exception as enqueue_error:
+        except REDIS_BACKEND_EXCEPTIONS as enqueue_error:
             # Roll back the dedupe marker if enqueue never made it to the queue.
             try:
                 self._execute_with_retry(lambda: self._client.delete(job_key))
-            except Exception:
+            except REDIS_BACKEND_EXCEPTIONS:
                 logger.warning(
                     "Failed to clean up Redis dedupe marker for queue=%s job_id=%s",
                     queue,
@@ -118,10 +120,16 @@ class RedisBus(EventBus):
             if raw_message is None:
                 continue
 
-            parsed = json.loads(raw_message)
+            try:
+                parsed = json.loads(raw_message)
+            except json.JSONDecodeError:
+                self._execute_with_retry(lambda job_key=job_key: self._client.delete(job_key))
+                continue
             payload = parsed.get("payload")
             if not isinstance(payload, dict):
+                self._execute_with_retry(lambda job_key=job_key: self._client.delete(job_key))
                 continue
+            self._execute_with_retry(lambda job_key=job_key: self._client.delete(job_key))
             messages.append(
                 {
                     "job_id": job_id,

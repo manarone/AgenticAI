@@ -6,16 +6,19 @@ import logging
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.bus.base import TASK_QUEUE, EventBus, QueuedMessage
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.core.observability import log_event
 from agenticai.db.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
+WORKER_EXCEPTIONS = BUS_EXCEPTIONS
 
 
 @dataclass(frozen=True)
@@ -65,17 +68,34 @@ class CoordinatorWorker:
         adapter: PlannerExecutorAdapter | None = None,
         poll_interval_seconds: float = 0.1,
         batch_size: int = 10,
+        recovery_scan_interval_seconds: float = 30.0,
+        recovery_batch_size: int = 100,
+        queued_recovery_age_seconds: float = 30.0,
+        running_timeout_seconds: float = 1800.0,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be > 0")
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
+        if recovery_scan_interval_seconds <= 0:
+            raise ValueError("recovery_scan_interval_seconds must be > 0")
+        if recovery_batch_size < 1:
+            raise ValueError("recovery_batch_size must be >= 1")
+        if queued_recovery_age_seconds <= 0:
+            raise ValueError("queued_recovery_age_seconds must be > 0")
+        if running_timeout_seconds <= 0:
+            raise ValueError("running_timeout_seconds must be > 0")
 
         self._bus = bus
         self._session_factory = session_factory
         self._adapter = adapter or NoOpPlannerExecutorAdapter()
         self._poll_interval_seconds = poll_interval_seconds
         self._batch_size = batch_size
+        self._recovery_scan_interval_seconds = recovery_scan_interval_seconds
+        self._recovery_batch_size = recovery_batch_size
+        self._queued_recovery_age_seconds = queued_recovery_age_seconds
+        self._running_timeout_seconds = running_timeout_seconds
+        self._last_recovery_scan_monotonic = 0.0
         self._stop_event = asyncio.Event()
         self._runner_task: asyncio.Task[None] | None = None
 
@@ -113,6 +133,14 @@ class CoordinatorWorker:
     async def run_once(self) -> int:
         """Process at most one batch of queued task messages."""
         try:
+            await asyncio.to_thread(self._run_recovery_if_due)
+        except asyncio.CancelledError:
+            raise
+        except WORKER_EXCEPTIONS:
+            logger.exception("Recovery scan failed; continuing with dequeue loop")
+        except Exception:
+            logger.exception("Recovery scan failed with unexpected error; continuing")
+        try:
             messages = await asyncio.to_thread(
                 self._bus.dequeue,
                 TASK_QUEUE,
@@ -142,6 +170,118 @@ class CoordinatorWorker:
             except Exception:
                 logger.exception("Failed to process queued message: %s", message)
         return processed_count
+
+    def _run_recovery_if_due(self) -> None:
+        """Run periodic stale-task recovery checks."""
+        now_monotonic = time.monotonic()
+        elapsed = now_monotonic - self._last_recovery_scan_monotonic
+        if elapsed < self._recovery_scan_interval_seconds:
+            return
+        self._last_recovery_scan_monotonic = now_monotonic
+        try:
+            self._recover_stale_queued_tasks()
+        except WORKER_EXCEPTIONS:
+            logger.exception("Stale QUEUED task recovery failed")
+        except Exception:
+            logger.exception("Stale QUEUED task recovery failed with unexpected error")
+        try:
+            self._recover_stale_running_tasks()
+        except WORKER_EXCEPTIONS:
+            logger.exception("Stale RUNNING task recovery failed")
+        except Exception:
+            logger.exception("Stale RUNNING task recovery failed with unexpected error")
+
+    def _recover_stale_queued_tasks(self) -> None:
+        """Re-enqueue long-stale QUEUED tasks that may have missed queue publish."""
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._queued_recovery_age_seconds)
+        with self._session_factory() as session:
+            tasks = (
+                session.execute(
+                    select(Task)
+                    .where(Task.status == TaskStatus.QUEUED.value, Task.updated_at <= cutoff)
+                    .order_by(Task.updated_at.asc())
+                    .limit(self._recovery_batch_size)
+                )
+                .scalars()
+                .all()
+            )
+            if not tasks:
+                return
+
+            recovered_count = 0
+            touched_count = 0
+            touched_at = datetime.now(UTC)
+            for task in tasks:
+                payload = {
+                    "task_id": task.id,
+                    "org_id": task.org_id,
+                    "requested_by_user_id": task.requested_by_user_id,
+                    "status": task.status,
+                }
+                try:
+                    accepted = self._bus.enqueue(TASK_QUEUE, task.id, payload)
+                except WORKER_EXCEPTIONS:
+                    logger.exception(
+                        "Queued task recovery failed while enqueueing task %s",
+                        task.id,
+                    )
+                    break
+                if accepted:
+                    recovered_count += 1
+                    log_event(
+                        logger,
+                        event="task.recovery.queued_reenqueued",
+                        task_id=task.id,
+                    )
+                task.updated_at = touched_at
+                session.add(task)
+                touched_count += 1
+
+            if touched_count > 0:
+                session.commit()
+            if recovered_count > 0:
+                log_event(
+                    logger,
+                    event="task.recovery.queued_summary",
+                    recovered_count=recovered_count,
+                    scanned_count=len(tasks),
+                )
+
+    def _recover_stale_running_tasks(self) -> None:
+        """Fail stale RUNNING tasks so they do not remain stranded forever."""
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._running_timeout_seconds)
+        with self._session_factory() as session:
+            stale_tasks = (
+                session.execute(
+                    select(Task)
+                    .where(Task.status == TaskStatus.RUNNING.value, Task.updated_at <= cutoff)
+                    .order_by(Task.updated_at.asc())
+                    .limit(self._recovery_batch_size)
+                )
+                .scalars()
+                .all()
+            )
+            if not stale_tasks:
+                return
+
+            marked_at = datetime.now(UTC)
+            for task in stale_tasks:
+                task.status = TaskStatus.TIMED_OUT.value
+                task.error_message = "Coordinator recovery timed out a stale RUNNING task"
+                task.completed_at = marked_at
+                task.updated_at = marked_at
+                session.add(task)
+                log_event(
+                    logger,
+                    event="task.recovery.running_timed_out",
+                    task_id=task.id,
+                )
+            session.commit()
+            log_event(
+                logger,
+                event="task.recovery.running_summary",
+                timed_out_count=len(stale_tasks),
+            )
 
     async def _process_message(self, message: QueuedMessage) -> None:
         payload = message.get("payload", {})

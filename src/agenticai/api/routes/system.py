@@ -3,18 +3,39 @@ import inspect
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.core.config import get_settings
 
 router = APIRouter(tags=["system"])
+BUS_HEALTH_EXCEPTIONS = BUS_EXCEPTIONS
 
 
-def _not_ready_response(bus_backend: str) -> JSONResponse:
+def _effective_bus_backend(bus: object, configured_backend: str) -> str:
+    """Best-effort runtime backend label for readiness responses."""
+    active_backend = getattr(bus, "active_backend", None)
+    if isinstance(active_backend, str) and active_backend:
+        return active_backend
+
+    bus_name = type(bus).__name__.lower()
+    if "inmemory" in bus_name:
+        return "inmemory"
+    if "redis" in bus_name:
+        return "redis"
+    return configured_backend
+
+
+def _not_ready_response(*, configured_backend: str, effective_backend: str) -> JSONResponse:
     """Return a 503 response for readiness failures."""
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        content={"status": "not_ready", "bus_backend": bus_backend},
+        content={
+            "status": "not_ready",
+            "configured_bus_backend": configured_backend,
+            "effective_bus_backend": effective_backend,
+        },
     )
 
 
@@ -33,7 +54,11 @@ async def readyz(request: Request) -> JSONResponse:
 
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
-        return _not_ready_response(settings.bus_backend)
+        return _not_ready_response(
+            configured_backend=settings.bus_backend,
+            effective_backend=settings.bus_backend,
+        )
+    effective_backend = _effective_bus_backend(bus, settings.bus_backend)
 
     ping = getattr(bus, "ping", None)
     if callable(ping):
@@ -42,9 +67,16 @@ async def readyz(request: Request) -> JSONResponse:
             if inspect.isawaitable(ping_result):
                 ping_result = await ping_result
             if ping_result is False:
-                return _not_ready_response(settings.bus_backend)
-        except Exception:
-            return _not_ready_response(settings.bus_backend)
+                return _not_ready_response(
+                    configured_backend=settings.bus_backend,
+                    effective_backend=effective_backend,
+                )
+        except BUS_HEALTH_EXCEPTIONS:
+            return _not_ready_response(
+                configured_backend=settings.bus_backend,
+                effective_backend=effective_backend,
+            )
+    effective_backend = _effective_bus_backend(bus, settings.bus_backend)
 
     session_factory: sessionmaker[Session] | None = getattr(
         request.app.state,
@@ -52,14 +84,24 @@ async def readyz(request: Request) -> JSONResponse:
         None,
     )
     if session_factory is None:
-        return _not_ready_response(settings.bus_backend)
+        return _not_ready_response(
+            configured_backend=settings.bus_backend,
+            effective_backend=effective_backend,
+        )
     try:
         with session_factory() as session:
             session.execute(text("SELECT 1"))
-    except Exception:
-        return _not_ready_response(settings.bus_backend)
+    except SQLAlchemyError:
+        return _not_ready_response(
+            configured_backend=settings.bus_backend,
+            effective_backend=effective_backend,
+        )
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={"status": "ready", "bus_backend": settings.bus_backend},
+        content={
+            "status": "ready",
+            "configured_bus_backend": settings.bus_backend,
+            "effective_bus_backend": effective_backend,
+        },
     )
