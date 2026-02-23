@@ -109,12 +109,15 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
 
 `CI` now triggers deployment to Coolify after tests pass on `main`.
 
-Required GitHub repository secrets (when deploy verification is enabled):
+Required GitHub repository secrets (for deploy verification):
 
 - `COOLIFY_WEBHOOK`: Coolify deploy webhook URL for `agenticai-dev`
 - `COOLIFY_TOKEN`: Coolify API token used in the `Authorization: Bearer` header
-- `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`) (can be a repository variable instead)
-- `COOLIFY_DEPLOY_REQUIRED` repository variable: set to `true` to fail CI when deploy config is missing
+
+Repository variables:
+
+- `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`)
+- `COOLIFY_DEPLOY_REQUIRED`: set to `true` to fail CI when deploy config is missing
 
 Recommended:
 

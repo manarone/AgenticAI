@@ -54,6 +54,9 @@ jobs:
         run: |
           APP_UUID="${COOLIFY_APP_UUID:-${COOLIFY_APP_UUID_VAR}}"
           REQUIRE_DEPLOY="$(echo "${COOLIFY_DEPLOY_REQUIRED:-false}" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "${COOLIFY_DEPLOY_REQUIRED}" ] && [ "${REQUIRE_DEPLOY}" != "true" ]; then
+            echo "::warning::Unrecognized COOLIFY_DEPLOY_REQUIRED='${COOLIFY_DEPLOY_REQUIRED}'. Only 'true' (case-insensitive) enables strict deploy enforcement."
+          fi
 
           if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ] || [ -z "${APP_UUID}" ]; then
             if [ "${REQUIRE_DEPLOY}" = "true" ]; then
