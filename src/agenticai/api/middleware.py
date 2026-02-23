@@ -7,15 +7,53 @@ import math
 import time
 from dataclasses import dataclass
 from typing import Final
+from uuid import uuid4
 
 from fastapi import Request, status
 from fastapi.responses import Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
 
 from agenticai.api.responses import build_error_response
+from agenticai.core.request_context import reset_request_id, set_request_id
 
 UNKNOWN_CLIENT_KEY: Final[str] = "unknown-client"
+REQUEST_ID_HEADER: Final[str] = "X-Request-ID"
+REQUEST_ID_STATE_KEY: Final[str] = "request_id"
+MAX_REQUEST_ID_LENGTH: Final[int] = 128
+
+
+class RequestCorrelationMiddleware(BaseHTTPMiddleware):
+    """Attach request correlation IDs to context and response headers."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        raw_request_id = request.headers.get(REQUEST_ID_HEADER)
+        request_id = _normalize_request_id(raw_request_id) or str(uuid4())
+        context_token = set_request_id(request_id)
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(context_token)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+
+def _normalize_request_id(raw_value: str | None) -> str | None:
+    """Normalize untrusted request-id header value into a bounded token."""
+    if raw_value is None:
+        return None
+    filtered = "".join(ch for ch in raw_value if 0x21 <= ord(ch) <= 0x7E)
+    normalized = filtered.strip()
+    if not normalized:
+        return None
+    if len(normalized) > MAX_REQUEST_ID_LENGTH:
+        return normalized[:MAX_REQUEST_ID_LENGTH]
+    return normalized
 
 
 @dataclass(frozen=True)

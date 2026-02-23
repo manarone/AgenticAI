@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from agenticai.core.request_context import get_request_id
 from agenticai.db.models import AuditEvent
 
 
@@ -21,9 +22,14 @@ def add_audit_event(
     created_at: datetime | None = None,
 ) -> AuditEvent:
     """Insert one audit event row into the active session."""
+    payload = dict(event_payload or {})
+    request_id = get_request_id()
+    if request_id is not None and "request_id" not in payload:
+        payload["request_id"] = request_id
+
     serialized_payload = None
-    if event_payload is not None:
-        serialized_payload = json.dumps(event_payload, sort_keys=True)
+    if payload:
+        serialized_payload = json.dumps(payload, sort_keys=True)
     audit_event = AuditEvent(
         org_id=org_id,
         task_id=task_id,

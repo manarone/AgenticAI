@@ -8,6 +8,8 @@ from datetime import date, datetime, time
 from enum import Enum
 from typing import Any
 
+from agenticai.core.request_context import get_request_id
+
 
 def _normalize_field_value(value: Any) -> Any:
     """Convert runtime values into JSON-safe primitives for logs."""
@@ -37,6 +39,9 @@ def log_event(
     normalized_fields = {
         key: _normalize_field_value(value) for key, value in sorted(fields.items())
     }
+    request_id = get_request_id()
+    if request_id is not None and "request_id" not in normalized_fields:
+        normalized_fields["request_id"] = request_id
     logger.log(
         level,
         "event=%s fields=%s",
