@@ -367,12 +367,24 @@ class CoordinatorWorker:
                     risk_assessment,
                 )
 
-        await asyncio.to_thread(
-            self._mark_execution_started,
-            handoff.task_id,
-            handoff.approved_resume,
-        )
         execution_started_at = time.perf_counter()
+        try:
+            await asyncio.to_thread(
+                self._mark_execution_started,
+                handoff.task_id,
+                handoff.approved_resume,
+            )
+        except Exception:
+            logger.exception("Failed to mark execution as started for task %s", handoff.task_id)
+            await asyncio.to_thread(
+                self._finalize_task,
+                handoff.task_id,
+                ExecutionResult(
+                    success=False,
+                    error_message="Failed to persist execution start metadata",
+                ),
+            )
+            return
         try:
             result = await self._execute_handoff(handoff)
         except Exception:
@@ -449,7 +461,8 @@ class CoordinatorWorker:
                 return
             now = datetime.now(UTC)
             task.execution_backend = str(getattr(self._adapter, "backend_name", "noop"))
-            task.execution_attempts = int(task.execution_attempts) + 1
+            current_attempts = int(task.execution_attempts or 0)
+            task.execution_attempts = current_attempts + 1
             task.execution_last_heartbeat_at = now
             task.execution_metadata = json.dumps({"approved_resume": approved_resume})
             task.updated_at = now

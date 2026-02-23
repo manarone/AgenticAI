@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from agenticai.coordinator import PlannerExecutorHandoff
 from agenticai.executor.docker_runtime import (
+    TIMEOUT_EXCEPTIONS,
     DockerException,
     DockerRuntimeConfig,
     DockerRuntimeExecutor,
@@ -102,7 +103,8 @@ def test_docker_runtime_nonzero_exit_returns_failure_with_logs() -> None:
 
 
 def test_docker_runtime_timeout_kills_and_removes_container() -> None:
-    container = FakeContainer(wait_error=TimeoutError("timed out"))
+    timeout_error_type = TIMEOUT_EXCEPTIONS[0]
+    container = FakeContainer(wait_error=timeout_error_type("timed out"))
     fake_client = FakeClient(FakeContainers(container=container))
     executor = DockerRuntimeExecutor(client=fake_client, config=_config())
 
@@ -125,20 +127,23 @@ def test_docker_runtime_run_error_returns_failure_without_container_cleanup() ->
     assert "socket unavailable" in (result.error_message or "")
 
 
-def test_docker_runtime_uses_configured_limits_and_force_fail_marker() -> None:
+def test_docker_runtime_uses_configured_limits_without_prompt_in_environment() -> None:
     container = FakeContainer(status_code=0)
     fake_containers = FakeContainers(container=container)
     fake_client = FakeClient(fake_containers)
     config = _config()
     executor = DockerRuntimeExecutor(client=fake_client, config=config)
 
-    result = executor.execute(_handoff(prompt="__force_fail__"))
+    result = executor.execute(_handoff(prompt="prompt with pii"))
 
     assert result.success is True
     assert fake_containers.last_run_kwargs is not None
     assert fake_containers.last_run_kwargs["image"] == config.image
     assert fake_containers.last_run_kwargs["mem_limit"] == config.memory_limit
     assert fake_containers.last_run_kwargs["nano_cpus"] == config.nano_cpus
+    environment = fake_containers.last_run_kwargs["environment"]
+    assert isinstance(environment, dict)
+    assert "AGENTICAI_PROMPT" not in environment
     command = fake_containers.last_run_kwargs["command"]
     assert isinstance(command, list)
-    assert "forced runtime failure" in " ".join(command)
+    assert "agenticai runtime task ok" in " ".join(command)

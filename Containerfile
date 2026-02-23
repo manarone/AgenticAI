@@ -25,6 +25,7 @@ RUN groupadd --system appgroup && \
 
 EXPOSE 8000
 
+# Docker backend requires mounted docker socket access at runtime.
 ENV HOST=0.0.0.0 \
     PORT=8000 \
     BUS_BACKEND=inmemory \
@@ -32,7 +33,8 @@ ENV HOST=0.0.0.0 \
     EXECUTION_RUNTIME_TIMEOUT_SECONDS=300 \
     EXECUTION_DOCKER_IMAGE=python:3.12-slim \
     EXECUTION_DOCKER_MEMORY_LIMIT=512m \
-    EXECUTION_DOCKER_NANO_CPUS=500000000
+    EXECUTION_DOCKER_NANO_CPUS=500000000 \
+    EXECUTION_DOCKER_ALLOW_FALLBACK=false
 
 USER appuser
 

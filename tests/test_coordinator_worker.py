@@ -290,6 +290,32 @@ def test_coordinator_requeues_message_when_mark_running_raises(
         assert mark_running_calls["count"] >= 2
 
 
+def test_coordinator_fails_task_when_mark_execution_started_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Execution-start metadata failures should finalize task as FAILED."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        coordinator = client.app.state.coordinator
+        assert coordinator is not None
+
+        def broken_mark_execution_started(task_id: str, approved_resume: bool) -> None:
+            _ = task_id
+            _ = approved_resume
+            raise RuntimeError("metadata write failed")
+
+        monkeypatch.setattr(
+            coordinator,
+            "_mark_execution_started",
+            broken_mark_execution_started,
+        )
+
+        task_id = _create_task(client, "compile release notes")
+        payload = _wait_for_status(client, task_id, "FAILED")
+        assert payload["error_message"] == "Failed to persist execution start metadata"
+        assert adapter.completed_calls == 0
+
+
 def test_coordinator_preserves_canceled_tasks_during_execution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

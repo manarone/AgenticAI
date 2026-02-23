@@ -81,7 +81,7 @@ class Settings(BaseSettings):
         ge=1,
     )
     execution_runtime_backend: str = Field(
-        default="docker",
+        default="noop",
         validation_alias="EXECUTION_RUNTIME_BACKEND",
     )
     execution_runtime_timeout_seconds: float = Field(
@@ -101,6 +101,10 @@ class Settings(BaseSettings):
         default=500_000_000,
         validation_alias="EXECUTION_DOCKER_NANO_CPUS",
         ge=1,
+    )
+    execution_docker_allow_fallback: bool = Field(
+        default=False,
+        validation_alias="EXECUTION_DOCKER_ALLOW_FALLBACK",
     )
     task_recovery_scan_interval_seconds: float = Field(
         default=30.0,
@@ -173,7 +177,7 @@ class Settings(BaseSettings):
         if self.execution_runtime_backend not in supported_execution_runtimes:
             options = ", ".join(sorted(supported_execution_runtimes))
             raise ValueError(f"EXECUTION_RUNTIME_BACKEND must be one of: {options}")
-        if not self.execution_docker_image.strip():
+        if self.execution_runtime_backend == "docker" and not self.execution_docker_image.strip():
             raise ValueError("EXECUTION_DOCKER_IMAGE must not be blank")
         if non_local_environment:
             if database_url.startswith("sqlite"):

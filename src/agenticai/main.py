@@ -16,12 +16,11 @@ from agenticai.coordinator import (
     NoOpPlannerExecutorAdapter,
     PlannerExecutorAdapter,
 )
-from agenticai.core.config import LOCAL_ENVIRONMENTS, get_settings
+from agenticai.core.config import LOCAL_ENVIRONMENTS, Settings, get_settings
 from agenticai.core.logging import configure_logging
 from agenticai.db.runtime_settings import read_bus_redis_fallback_override
 from agenticai.db.session import build_engine, build_session_factory
-from agenticai.executor import DockerRuntimeExecutor
-from agenticai.executor.docker_runtime import DockerRuntimeConfig
+from agenticai.executor import DockerRuntimeConfig, DockerRuntimeExecutor
 
 logger = logging.getLogger(__name__)
 RESOURCE_CLOSE_TIMEOUT_SECONDS = 5
@@ -50,7 +49,7 @@ async def _close_resource(resource: object) -> None:
         return
 
 
-def _build_default_coordinator_adapter(settings) -> PlannerExecutorAdapter:
+async def _build_default_coordinator_adapter(settings: Settings) -> PlannerExecutorAdapter:
     """Select coordinator adapter based on configured runtime backend."""
     backend = settings.execution_runtime_backend
     if backend == "noop":
@@ -58,17 +57,22 @@ def _build_default_coordinator_adapter(settings) -> PlannerExecutorAdapter:
     if backend != "docker":
         raise ValueError(f"Unsupported EXECUTION_RUNTIME_BACKEND '{backend}'")
     try:
-        return DockerRuntimeExecutor.from_config(
+        return await asyncio.to_thread(
+            DockerRuntimeExecutor.from_config,
             config=DockerRuntimeConfig(
                 image=settings.execution_docker_image,
                 timeout_seconds=settings.execution_runtime_timeout_seconds,
                 memory_limit=settings.execution_docker_memory_limit or None,
                 nano_cpus=settings.execution_docker_nano_cpus,
-            )
+            ),
         )
     except Exception:
+        if not settings.execution_docker_allow_fallback:
+            logger.exception("Docker runtime initialization failed; fallback is disabled")
+            raise
         logger.exception(
-            "Falling back to no-op execution adapter because Docker runtime initialization failed"
+            "Falling back to no-op execution adapter because Docker runtime initialization failed "
+            "(EXECUTION_DOCKER_ALLOW_FALLBACK=true)"
         )
         return NoOpPlannerExecutorAdapter()
 
@@ -96,8 +100,10 @@ def create_app(
             redis_fallback_to_inmemory=redis_fallback_override,
         )
         app.state.coordinator = None
-        effective_adapter = coordinator_adapter or _build_default_coordinator_adapter(settings)
         if start_coordinator:
+            effective_adapter = coordinator_adapter
+            if effective_adapter is None:
+                effective_adapter = await _build_default_coordinator_adapter(settings)
             coordinator = CoordinatorWorker(
                 bus=app.state.bus,
                 session_factory=app.state.db_session_factory,

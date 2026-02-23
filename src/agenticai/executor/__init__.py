@@ -1,5 +1,5 @@
 """Execution runtime adapters."""
 
-from agenticai.executor.docker_runtime import DockerRuntimeExecutor
+from agenticai.executor.docker_runtime import DockerRuntimeConfig, DockerRuntimeExecutor
 
-__all__ = ["DockerRuntimeExecutor"]
+__all__ = ["DockerRuntimeConfig", "DockerRuntimeExecutor"]

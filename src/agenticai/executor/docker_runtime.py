@@ -12,6 +12,11 @@ from agenticai.coordinator.worker import ExecutionResult, PlannerExecutorHandoff
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - import branch depends on runtime environment
+    import requests
+except Exception:  # pragma: no cover - fallback used in tests/minimal envs
+    requests = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - import branch depends on runtime environment
     import docker
     from docker.errors import APIError, DockerException, NotFound
 except Exception:  # pragma: no cover - fallback used in tests/no-docker envs
@@ -25,6 +30,15 @@ except Exception:  # pragma: no cover - fallback used in tests/no-docker envs
 
     class NotFound(DockerException):
         """Fallback Docker not-found exception type."""
+
+
+if requests is not None:
+    TIMEOUT_EXCEPTIONS: tuple[type[Exception], ...] = (
+        requests.exceptions.ReadTimeout,
+        requests.exceptions.Timeout,
+    )
+else:
+    TIMEOUT_EXCEPTIONS = (TimeoutError,)
 
 
 @dataclass(frozen=True)
@@ -63,7 +77,7 @@ class DockerRuntimeExecutor:
         try:
             container = self._client.containers.run(
                 self._config.image,
-                command=self._build_command(handoff.prompt),
+                command=self._build_command(),
                 detach=True,
                 auto_remove=False,
                 network_disabled=True,
@@ -73,7 +87,6 @@ class DockerRuntimeExecutor:
                     "AGENTICAI_TASK_ID": handoff.task_id,
                     "AGENTICAI_ORG_ID": handoff.org_id,
                     "AGENTICAI_REQUESTED_BY_USER_ID": handoff.requested_by_user_id,
-                    "AGENTICAI_PROMPT": handoff.prompt or "",
                 },
                 labels={
                     "agenticai.task_id": handoff.task_id,
@@ -92,7 +105,7 @@ class DockerRuntimeExecutor:
                     ),
                 )
             return ExecutionResult(success=True)
-        except TimeoutError:
+        except TIMEOUT_EXCEPTIONS:
             self._safe_kill(container)
             return ExecutionResult(
                 success=False,
@@ -108,11 +121,8 @@ class DockerRuntimeExecutor:
         finally:
             self._safe_remove(container)
 
-    def _build_command(self, prompt: str | None) -> list[str]:
+    def _build_command(self) -> list[str]:
         """Build deterministic container command for scaffold execution."""
-        normalized_prompt = (prompt or "").strip().lower()
-        if "__force_fail__" in normalized_prompt:
-            return ["sh", "-lc", "echo 'forced runtime failure' >&2; exit 2"]
         timestamp = datetime.now(UTC).isoformat()
         return ["sh", "-lc", f"echo 'agenticai runtime task ok {timestamp}' >/tmp/task.log"]
 

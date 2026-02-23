@@ -98,6 +98,11 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
 - Optional coordinator tuning:
   - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)
   - `COORDINATOR_BATCH_SIZE` (default `10`)
+- Runtime execution backend:
+  - Default local value is `EXECUTION_RUNTIME_BACKEND=noop`
+  - Container deploys can set `EXECUTION_RUNTIME_BACKEND=docker` for per-task containers
+  - Docker backend requires access to a Docker Engine endpoint (for example mounted `/var/run/docker.sock`)
+  - `EXECUTION_DOCKER_ALLOW_FALLBACK=false` keeps startup fail-fast if Docker runtime init fails
 - Set `TASK_API_JWT_SECRET` for `/v1/tasks*` authentication
 - Set `TASK_API_JWT_AUDIENCE` to the expected `aud` claim value (default `agenticai-v1`)
 - Optional: set `TASK_API_JWT_ALGORITHM` (only `HS256` is currently supported)
