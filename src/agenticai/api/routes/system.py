@@ -52,6 +52,16 @@ async def readyz(request: Request) -> JSONResponse:
     if settings is None:
         settings = get_settings()
 
+    coordinator_required = bool(getattr(request.app.state, "coordinator_required", True))
+    if coordinator_required:
+        coordinator = getattr(request.app.state, "coordinator", None)
+        coordinator_running = bool(getattr(coordinator, "is_running", False))
+        if not coordinator_running:
+            return _not_ready_response(
+                configured_backend=settings.bus_backend,
+                effective_backend=settings.bus_backend,
+            )
+
     bus = getattr(request.app.state, "bus", None)
     if bus is None:
         return _not_ready_response(

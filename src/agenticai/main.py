@@ -11,7 +11,7 @@ from agenticai.api.router import api_router
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.factory import create_bus
 from agenticai.coordinator import CoordinatorWorker, PlannerExecutorAdapter
-from agenticai.core.config import get_settings
+from agenticai.core.config import LOCAL_ENVIRONMENTS, get_settings
 from agenticai.core.logging import configure_logging
 from agenticai.db.runtime_settings import read_bus_redis_fallback_override
 from agenticai.db.session import build_engine, build_session_factory
@@ -51,11 +51,13 @@ def create_app(
     """Create and configure the FastAPI application."""
     settings = get_settings()
     configure_logging(settings.log_level)
+    is_local_environment = settings.environment.strip().lower() in LOCAL_ENVIRONMENTS
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Initialize and clean up application resources."""
         app.state.settings = settings
+        app.state.coordinator_required = start_coordinator
         app.state.db_engine = build_engine(settings.database_url.get_secret_value())
         app.state.db_session_factory = build_session_factory(app.state.db_engine)
         redis_fallback_override = read_bus_redis_fallback_override(app.state.db_session_factory)
@@ -96,17 +98,26 @@ def create_app(
         app.state.db_engine = None
         app.state.db_session_factory = None
 
-    app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title=settings.app_name,
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if is_local_environment else None,
+        redoc_url="/redoc" if is_local_environment else None,
+        openapi_url="/openapi.json" if is_local_environment else None,
+    )
     app.include_router(api_router)
 
     @app.get("/", tags=["meta"])
     def root() -> dict[str, str]:
         """Return basic service metadata."""
-        return {
+        payload = {
             "name": settings.app_name,
-            "environment": settings.environment,
             "status": "ok",
         }
+        if is_local_environment:
+            payload["environment"] = settings.environment
+        return payload
 
     return app
 

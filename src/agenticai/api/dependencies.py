@@ -4,6 +4,7 @@ import hmac
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session, sessionmaker
@@ -57,11 +58,22 @@ def _parse_bearer_token(authorization: str | None) -> str | None:
     return token or None
 
 
+def _normalized_actor_signature(signature: str | None) -> str | None:
+    """Normalize supported actor signature formats to lowercase hex."""
+    if signature is None:
+        return None
+    normalized = signature.strip()
+    if normalized.lower().startswith("sha256="):
+        normalized = normalized.split("=", 1)[1]
+    return normalized.lower() or None
+
+
 def get_task_api_principal(
     request: Request,
     db: Annotated[Session, Depends(get_db_session)],
     authorization: Annotated[str | None, Header()] = None,
     actor_user_id: Annotated[str | None, Header(alias="X-Actor-User-Id")] = None,
+    actor_signature: Annotated[str | None, Header(alias="X-Actor-Signature")] = None,
 ) -> TaskApiPrincipal:
     """Authenticate a caller and resolve a user/org principal."""
     settings = getattr(request.app.state, "settings", None)
@@ -104,8 +116,43 @@ def get_task_api_principal(
                 "message": "X-Actor-User-Id header is required",
             },
         )
+    normalized_actor_user_id = actor_user_id.strip()
+    try:
+        normalized_actor_user_id = str(UUID(normalized_actor_user_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "TASK_API_UNAUTHORIZED",
+                "message": "X-Actor-User-Id must be a valid UUID",
+            },
+        ) from exc
 
-    user = db.get(User, actor_user_id.strip())
+    actor_hmac_secret = (
+        settings.task_api_actor_hmac_secret.get_secret_value()
+        if settings.task_api_actor_hmac_secret is not None
+        else None
+    )
+    if actor_hmac_secret is not None:
+        provided_signature = _normalized_actor_signature(actor_signature)
+        expected_signature = hmac.new(
+            actor_hmac_secret.encode("utf-8"),
+            normalized_actor_user_id.encode("utf-8"),
+            "sha256",
+        ).hexdigest()
+        if provided_signature is None or not hmac.compare_digest(
+            provided_signature,
+            expected_signature,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "code": "TASK_API_UNAUTHORIZED",
+                    "message": "Invalid or missing X-Actor-Signature header",
+                },
+            )
+
+    user = db.get(User, normalized_actor_user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

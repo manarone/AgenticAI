@@ -1,5 +1,6 @@
 """Telegram webhook ingress route."""
 
+import hmac
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
@@ -30,6 +31,7 @@ from agenticai.db.models import (
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 DBSession = Annotated[Session, Depends(get_db_session)]
 logger = logging.getLogger(__name__)
+MAX_DISPLAY_NAME_LENGTH = 255
 
 
 def _ack_status(outcome: str) -> str:
@@ -262,9 +264,9 @@ def _display_name_from_message(message: TelegramMessage) -> str | None:
     pieces = [from_user.first_name, from_user.last_name]
     name = " ".join(piece.strip() for piece in pieces if piece and piece.strip())
     if name:
-        return name
+        return name[:MAX_DISPLAY_NAME_LENGTH]
     if from_user.username and from_user.username.strip():
-        return from_user.username.strip()
+        return from_user.username.strip()[:MAX_DISPLAY_NAME_LENGTH]
     return None
 
 
@@ -334,7 +336,10 @@ def telegram_webhook(
             "TELEGRAM_WEBHOOK_SECRET is not configured; /telegram/webhook is explicitly running "
             "without authentication because ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
         )
-    elif webhook_secret != expected_secret.get_secret_value():
+    elif not hmac.compare_digest(
+        (webhook_secret or "").encode("utf-8"),
+        expected_secret.get_secret_value().encode("utf-8"),
+    ):
         return build_error_response(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="TELEGRAM_WEBHOOK_UNAUTHORIZED",

@@ -15,7 +15,7 @@ class TelegramFromUser(BaseModel):
 class TelegramMessage(BaseModel):
     """Subset of Telegram message data required by the webhook."""
 
-    text: str | None = None
+    text: str | None = Field(default=None, max_length=8192)
     from_user: TelegramFromUser | None = Field(default=None, alias="from")
 
 

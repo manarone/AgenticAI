@@ -87,7 +87,7 @@ def main() -> int:
         if elapsed >= args.timeout:
             print(
                 f"::error::Timed out after {args.timeout}s waiting for Coolify deployment "
-                f"for commit {args.commit}."
+                f"and healthy app state for commit {args.commit}."
             )
             return 1
 
@@ -122,7 +122,7 @@ def main() -> int:
             print(f"::error::Coolify deployment failed with status '{status}'.")
             return 1
 
-        if status in PENDING_STATUSES:
+        if status in PENDING_STATUSES or not status:
             time.sleep(args.poll_interval)
             continue
 
@@ -130,16 +130,18 @@ def main() -> int:
         try:
             app_payload = _get_json(app_url, args.token)
         except urllib.error.URLError as exc:
-            print(f"::error::Unable to verify final app status ({exc}).")
-            return 1
+            print(f"::warning::Unable to verify final app status ({exc}). Retrying...")
+            time.sleep(args.poll_interval)
+            continue
 
         app_status = _normalize_status(app_payload.get("status"))
         if app_status != "running:healthy":
             print(
-                f"::error::Deployment status '{status}', but app status is '{app_status}', "
-                "expected 'running:healthy'."
+                f"Deployment status '{status}', app status '{app_status}'. "
+                f"Waiting for 'running:healthy'. Elapsed: {elapsed}s/{args.timeout}s"
             )
-            return 1
+            time.sleep(args.poll_interval)
+            continue
 
         if status not in SUCCESS_STATUSES:
             print(

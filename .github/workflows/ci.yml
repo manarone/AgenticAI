@@ -40,6 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Trigger Coolify deploy webhook
         env:
           COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
@@ -51,8 +54,8 @@ jobs:
           APP_UUID="${COOLIFY_APP_UUID:-${COOLIFY_APP_UUID_VAR}}"
 
           if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ] || [ -z "${APP_UUID}" ]; then
-            echo "::warning::Skipping Coolify deploy verification. Configure COOLIFY_WEBHOOK + COOLIFY_TOKEN secrets and COOLIFY_APP_UUID (secret or repository variable)."
-            exit 0
+            echo "::error::Missing Coolify deploy config. Configure COOLIFY_WEBHOOK + COOLIFY_TOKEN secrets and COOLIFY_APP_UUID (secret or repository variable)."
+            exit 1
           fi
 
           curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \
