@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,6 +69,12 @@ def resolve_effective_bypass_mode(
     override = get_user_policy_override(session, org_id=org_id, user_id=user_id)
     if override is None:
         return BypassMode.DISABLED
+    expires_at = override.expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= datetime.now(UTC):
+            return BypassMode.DISABLED
     try:
         return BypassMode(override.bypass_mode)
     except ValueError:

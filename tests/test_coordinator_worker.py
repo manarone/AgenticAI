@@ -213,7 +213,12 @@ def _set_org_bypass_policy(client: TestClient, *, allowed: bool) -> None:
         session.commit()
 
 
-def _set_user_bypass_override(client: TestClient, *, bypass_mode: BypassMode) -> None:
+def _set_user_bypass_override(
+    client: TestClient,
+    *,
+    bypass_mode: BypassMode,
+    expires_at: datetime | None = None,
+) -> None:
     with Session(bind=client.app.state.db_engine) as session:
         override = session.execute(
             select(UserPolicyOverride).where(
@@ -226,9 +231,11 @@ def _set_user_bypass_override(client: TestClient, *, bypass_mode: BypassMode) ->
                 org_id=TEST_ORG_ID,
                 user_id=TEST_USER_ID,
                 bypass_mode=bypass_mode.value,
+                expires_at=expires_at,
             )
         else:
             override.bypass_mode = bypass_mode.value
+            override.expires_at = expires_at
         session.add(override)
         session.commit()
 
@@ -502,6 +509,26 @@ def test_org_policy_disallow_overrides_user_bypass(
         _set_user_bypass_override(client, bypass_mode=BypassMode.ALL_RISK)
 
         task_id = _create_task(client, "delete production pipeline")
+        payload = _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        assert payload["approval_required"] is True
+        assert payload["approval_decision"] == "PENDING"
+        assert adapter.completed_calls == 0
+
+
+def test_expired_bypass_override_is_not_effective(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Expired overrides should fall back to DISABLED and require approval."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        _set_org_bypass_policy(client, allowed=True)
+        _set_user_bypass_override(
+            client,
+            bypass_mode=BypassMode.ALL_RISK,
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+
+        task_id = _create_task(client, "delete production datastore")
         payload = _wait_for_status(client, task_id, "WAITING_APPROVAL")
         assert payload["approval_required"] is True
         assert payload["approval_decision"] == "PENDING"
