@@ -105,9 +105,7 @@ class Settings(BaseSettings):
             raise ValueError("REDIS_URL is required when BUS_BACKEND=redis")
         if non_local_environment:
             if database_url.startswith("sqlite"):
-                raise ValueError(
-                    "DATABASE_URL must not use sqlite outside development/local/test"
-                )
+                raise ValueError("DATABASE_URL must not use sqlite outside development/local/test")
             if self.telegram_webhook_secret is None and not self.allow_insecure_telegram_webhook:
                 raise ValueError(
                     "TELEGRAM_WEBHOOK_SECRET is required outside development/local/test unless "
