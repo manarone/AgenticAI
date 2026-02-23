@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LOCAL_ENVIRONMENTS = frozenset({"development", "dev", "local", "test"})
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -94,7 +96,7 @@ class Settings(BaseSettings):
     def validate_backends(self) -> "Settings":
         """Validate backend compatibility for the current scaffold."""
         environment = self.environment.strip().lower()
-        non_local_environment = environment not in {"development", "dev", "local", "test"}
+        non_local_environment = environment not in LOCAL_ENVIRONMENTS
         database_url = self.database_url.get_secret_value().strip().lower()
 
         supported_backends = {"inmemory", "redis"}
@@ -116,6 +118,8 @@ class Settings(BaseSettings):
                     "TASK_API_AUTH_TOKEN is required outside development/local/test unless "
                     "ALLOW_INSECURE_TASK_API=true"
                 )
+            # When token auth is configured, actor binding stays mandatory.
+            # ALLOW_INSECURE_TASK_API only allows TASK_API_AUTH_TOKEN to be omitted.
             if self.task_api_auth_token is not None and self.task_api_actor_hmac_secret is None:
                 raise ValueError(
                     "TASK_API_ACTOR_HMAC_SECRET is required outside development/local/test when "

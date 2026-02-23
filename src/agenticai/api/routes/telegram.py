@@ -336,7 +336,10 @@ def telegram_webhook(
             "TELEGRAM_WEBHOOK_SECRET is not configured; /telegram/webhook is explicitly running "
             "without authentication because ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
         )
-    elif not hmac.compare_digest(webhook_secret or "", expected_secret.get_secret_value()):
+    elif not hmac.compare_digest(
+        (webhook_secret or "").encode("utf-8"),
+        expected_secret.get_secret_value().encode("utf-8"),
+    ):
         return build_error_response(
             status_code=status.HTTP_401_UNAUTHORIZED,
             code="TELEGRAM_WEBHOOK_UNAUTHORIZED",

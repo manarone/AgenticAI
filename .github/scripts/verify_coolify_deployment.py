@@ -130,8 +130,9 @@ def main() -> int:
         try:
             app_payload = _get_json(app_url, args.token)
         except urllib.error.URLError as exc:
-            print(f"::error::Unable to verify final app status ({exc}).")
-            return 1
+            print(f"::warning::Unable to verify final app status ({exc}). Retrying...")
+            time.sleep(args.poll_interval)
+            continue
 
         app_status = _normalize_status(app_payload.get("status"))
         if app_status != "running:healthy":

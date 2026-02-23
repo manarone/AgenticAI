@@ -78,6 +78,8 @@ Current scaffold endpoints:
 - `Authorization: Bearer <TASK_API_AUTH_TOKEN>`
 - `X-Actor-User-Id: <user_uuid>`
 - `X-Actor-Signature: sha256=<hmac_hex>` when `TASK_API_ACTOR_HMAC_SECRET` is configured
+  HMAC input is the canonical lowercase `X-Actor-User-Id` UUID string (UTF-8 bytes),
+  signed with `TASK_API_ACTOR_HMAC_SECRET` using HMAC-SHA256 and lowercase hex output.
 
 Task creation supports idempotent retries with optional `Idempotency-Key` header.
 
@@ -93,7 +95,7 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
   - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)
   - `COORDINATOR_BATCH_SIZE` (default `10`)
 - Set `TASK_API_AUTH_TOKEN` for `/v1/tasks*` authentication
-- Set `TASK_API_ACTOR_HMAC_SECRET` outside local/dev/test when `TASK_API_AUTH_TOKEN` is used
+- Required: set `TASK_API_ACTOR_HMAC_SECRET` outside local/dev/test when `TASK_API_AUTH_TOKEN` is used (startup fails if missing)
 - Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
 - Optional hardening overrides:
   - `ALLOW_INSECURE_TASK_API=true` (dev/local only)

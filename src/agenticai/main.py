@@ -11,7 +11,7 @@ from agenticai.api.router import api_router
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.factory import create_bus
 from agenticai.coordinator import CoordinatorWorker, PlannerExecutorAdapter
-from agenticai.core.config import get_settings
+from agenticai.core.config import LOCAL_ENVIRONMENTS, get_settings
 from agenticai.core.logging import configure_logging
 from agenticai.db.runtime_settings import read_bus_redis_fallback_override
 from agenticai.db.session import build_engine, build_session_factory
@@ -51,8 +51,7 @@ def create_app(
     """Create and configure the FastAPI application."""
     settings = get_settings()
     configure_logging(settings.log_level)
-    local_environments = {"development", "dev", "local", "test"}
-    is_local_environment = settings.environment.strip().lower() in local_environments
+    is_local_environment = settings.environment.strip().lower() in LOCAL_ENVIRONMENTS
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

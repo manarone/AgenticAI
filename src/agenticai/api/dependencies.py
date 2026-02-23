@@ -118,7 +118,7 @@ def get_task_api_principal(
         )
     normalized_actor_user_id = actor_user_id.strip()
     try:
-        UUID(normalized_actor_user_id)
+        normalized_actor_user_id = str(UUID(normalized_actor_user_id))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

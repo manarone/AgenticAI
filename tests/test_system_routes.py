@@ -215,6 +215,17 @@ def test_task_routes_require_actor_signature_when_configured(client, task_api_he
     )
     assert valid_response.status_code == 200
 
+    # Uppercase UUID should still work because server canonicalizes UUID casing.
+    uppercase_actor_response = client.get(
+        "/v1/tasks",
+        headers={
+            **task_api_headers,
+            "X-Actor-User-Id": actor_id.upper(),
+            "X-Actor-Signature": f"sha256={signature}",
+        },
+    )
+    assert uppercase_actor_response.status_code == 200
+
 
 def test_list_tasks(client, task_api_headers) -> None:
     """Task listing starts empty in a fresh test database."""
