@@ -71,10 +71,7 @@ def test_phase2_schema_upgrade_downgrade_and_queryability(tmp_path: Path) -> Non
 
     with engine.begin() as connection:
         connection.execute(
-            text(
-                "INSERT INTO organizations (id, slug, name) "
-                "VALUES (:id, :slug, :name)"
-            ),
+            text("INSERT INTO organizations (id, slug, name) VALUES (:id, :slug, :name)"),
             {"id": "org-1", "slug": "org-one", "name": "Org One"},
         )
         connection.execute(
@@ -131,7 +128,7 @@ def test_phase2_schema_upgrade_downgrade_and_queryability(tmp_path: Path) -> Non
                 "task_id": "task-1",
                 "actor_user_id": "user-1",
                 "event_type": "task.lifecycle.created",
-                "event_payload": "{\"source\":\"migration-test\"}",
+                "event_payload": '{"source":"migration-test"}',
             },
         )
         connection.execute(
@@ -152,8 +149,7 @@ def test_phase2_schema_upgrade_downgrade_and_queryability(tmp_path: Path) -> Non
         assert connection.execute(text("SELECT COUNT(*) FROM approvals")).scalar_one() == 1
         assert connection.execute(text("SELECT COUNT(*) FROM audit_events")).scalar_one() == 1
         assert (
-            connection.execute(text("SELECT COUNT(*) FROM user_policy_overrides")).scalar_one()
-            == 1
+            connection.execute(text("SELECT COUNT(*) FROM user_policy_overrides")).scalar_one() == 1
         )
 
     engine.dispose()
