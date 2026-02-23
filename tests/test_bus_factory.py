@@ -122,8 +122,8 @@ def test_settings_require_webhook_secret_in_production(monkeypatch: MonkeyPatch)
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
     monkeypatch.delenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", raising=False)
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     with pytest.raises(ValueError) as excinfo:
         Settings()
@@ -136,52 +136,53 @@ def test_settings_allow_insecure_webhook_override_in_production(monkeypatch: Mon
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
     monkeypatch.setenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", "true")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     settings = Settings()
     assert settings.allow_insecure_telegram_webhook is True
 
 
-def test_settings_require_task_api_token_in_production(monkeypatch: MonkeyPatch) -> None:
-    """Production environment should fail closed when task API token is absent."""
+def test_settings_require_task_api_jwt_secret_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production environment should fail closed when task API JWT secret is absent."""
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
-    monkeypatch.delenv("ALLOW_INSECURE_TASK_API", raising=False)
+    monkeypatch.delenv("TASK_API_JWT_SECRET", raising=False)
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     with pytest.raises(ValueError) as excinfo:
         Settings()
-    assert "TASK_API_AUTH_TOKEN is required" in str(excinfo.value)
+    assert "TASK_API_JWT_SECRET is required" in str(excinfo.value)
 
 
-def test_settings_allow_insecure_task_api_override_in_production(monkeypatch: MonkeyPatch) -> None:
-    """Production can explicitly opt into insecure task API mode when required."""
+def test_settings_require_non_blank_task_api_jwt_audience(monkeypatch: MonkeyPatch) -> None:
+    """Task API JWT audience must be non-empty for consistent claim validation."""
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
-    monkeypatch.setenv("ALLOW_INSECURE_TASK_API", "true")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", " ")
     get_settings.cache_clear()
-    settings = Settings()
-    assert settings.allow_insecure_task_api is True
+    with pytest.raises(ValueError) as excinfo:
+        Settings()
+    assert "TASK_API_JWT_AUDIENCE must not be blank" in str(excinfo.value)
 
 
-def test_settings_require_actor_hmac_secret_in_production_when_task_api_token_set(
+def test_settings_reject_unsupported_task_api_jwt_algorithm(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Production should require actor-signature secret for task API identity binding."""
+    """Only supported signing algorithms should be accepted for task API JWT validation."""
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.delenv("TASK_API_ACTOR_HMAC_SECRET", raising=False)
-    monkeypatch.delenv("ALLOW_INSECURE_TASK_API", raising=False)
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
+    monkeypatch.setenv("TASK_API_JWT_ALGORITHM", "HS512")
     get_settings.cache_clear()
     with pytest.raises(ValueError) as excinfo:
         Settings()
-    assert "TASK_API_ACTOR_HMAC_SECRET is required" in str(excinfo.value)
+    assert "TASK_API_JWT_ALGORITHM must be one of: HS256" in str(excinfo.value)
 
 
 def test_settings_reject_sqlite_in_production(monkeypatch: MonkeyPatch) -> None:
@@ -189,8 +190,8 @@ def test_settings_reject_sqlite_in_production(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./agenticai.db")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "jwt-secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     with pytest.raises(ValueError) as excinfo:
         Settings()

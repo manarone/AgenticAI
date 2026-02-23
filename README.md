@@ -75,11 +75,15 @@ Current scaffold endpoints:
 
 `/v1/tasks*` requires:
 
-- `Authorization: Bearer <TASK_API_AUTH_TOKEN>`
-- `X-Actor-User-Id: <user_uuid>`
-- `X-Actor-Signature: sha256=<hmac_hex>` when `TASK_API_ACTOR_HMAC_SECRET` is configured
-  HMAC input is the canonical lowercase `X-Actor-User-Id` UUID string (UTF-8 bytes),
-  signed with `TASK_API_ACTOR_HMAC_SECRET` using HMAC-SHA256 and lowercase hex output.
+- `Authorization: Bearer <jwt>`
+- Required JWT claims:
+  - `sub` (user UUID)
+  - `org_id` (org UUID)
+  - `aud` (must match `TASK_API_JWT_AUDIENCE`)
+  - `iat`
+  - `exp`
+
+`TASK_API_JWT_SECRET` is used to verify JWT signatures (`HS256`).
 
 Task creation supports idempotent retries with optional `Idempotency-Key` header.
 
@@ -94,11 +98,11 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
 - Optional coordinator tuning:
   - `COORDINATOR_POLL_INTERVAL_SECONDS` (default `0.1`)
   - `COORDINATOR_BATCH_SIZE` (default `10`)
-- Set `TASK_API_AUTH_TOKEN` for `/v1/tasks*` authentication
-- Required: set `TASK_API_ACTOR_HMAC_SECRET` outside local/dev/test when `TASK_API_AUTH_TOKEN` is used (startup fails if missing)
+- Set `TASK_API_JWT_SECRET` for `/v1/tasks*` authentication
+- Set `TASK_API_JWT_AUDIENCE` to the expected `aud` claim value (default `agenticai-v1`)
+- Optional: set `TASK_API_JWT_ALGORITHM` (only `HS256` is currently supported)
 - Set `TELEGRAM_WEBHOOK_SECRET` and configure Telegram webhook secret token header to match
 - Optional hardening overrides:
-  - `ALLOW_INSECURE_TASK_API=true` (dev/local only)
   - `ALLOW_INSECURE_TELEGRAM_WEBHOOK=true` (dev/local only)
 - `DATABASE_URL` must not use SQLite outside local/dev/test
 - `/docs`, `/redoc`, and OpenAPI are disabled outside local/dev/test

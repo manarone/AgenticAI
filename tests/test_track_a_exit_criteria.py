@@ -12,6 +12,7 @@ from agenticai.db.base import Base
 from agenticai.db.models import Organization, Task, TelegramWebhookEvent, User
 from agenticai.db.session import build_engine
 from agenticai.main import create_app
+from tests.jwt_utils import make_task_api_jwt
 
 WEBHOOK_PATH = "/telegram/webhook"
 WEBHOOK_SECRET_HEADER = {"X-Telegram-Bot-Api-Secret-Token": "track-a-secret"}
@@ -19,11 +20,18 @@ WEBHOOK_SECRET_HEADER = {"X-Telegram-Bot-Api-Secret-Token": "track-a-secret"}
 TRACK_A_ORG_ID = "00000000-0000-0000-0000-000000000101"
 TRACK_A_USER_ID = "00000000-0000-0000-0000-000000000102"
 TRACK_A_TELEGRAM_USER_ID = 222333444
-TRACK_A_TASK_API_AUTH_TOKEN = "track-a-task-api-token"
-TRACK_A_TASK_HEADERS = {
-    "Authorization": f"Bearer {TRACK_A_TASK_API_AUTH_TOKEN}",
-    "X-Actor-User-Id": TRACK_A_USER_ID,
-}
+TRACK_A_TASK_API_JWT_SECRET = "track-a-task-api-jwt-secret-0003"
+TRACK_A_TASK_API_JWT_AUDIENCE = "agenticai-track-a-tests"
+
+
+def _track_a_task_headers() -> dict[str, str]:
+    token = make_task_api_jwt(
+        secret=TRACK_A_TASK_API_JWT_SECRET,
+        audience=TRACK_A_TASK_API_JWT_AUDIENCE,
+        sub=TRACK_A_USER_ID,
+        org_id=TRACK_A_ORG_ID,
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -37,7 +45,8 @@ def track_a_client(
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
     monkeypatch.setenv("BUS_BACKEND", "inmemory")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TRACK_A_TASK_API_AUTH_TOKEN)
+    monkeypatch.setenv("TASK_API_JWT_SECRET", TRACK_A_TASK_API_JWT_SECRET)
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", TRACK_A_TASK_API_JWT_AUDIENCE)
     get_settings.cache_clear()
 
     engine = build_engine(database_url)
@@ -90,7 +99,7 @@ def _wait_for_terminal_status(
     deadline = time.monotonic() + timeout_seconds
     last_payload: dict[str, object] | None = None
     while time.monotonic() < deadline:
-        response = client.get(f"/v1/tasks/{task_id}", headers=TRACK_A_TASK_HEADERS)
+        response = client.get(f"/v1/tasks/{task_id}", headers=_track_a_task_headers())
         assert response.status_code == 200
         payload = response.json()
         last_payload = payload

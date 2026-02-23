@@ -7,10 +7,12 @@ from fastapi.testclient import TestClient
 from agenticai.core.config import get_settings
 from agenticai.main import create_app
 from tests.db_seed import seed_identity_database
+from tests.jwt_utils import make_task_api_jwt
 
 TEST_ORG_ID = "00000000-0000-0000-0000-000000000901"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000902"
-TEST_TASK_API_AUTH_TOKEN = "policy-test-token"
+TEST_TASK_API_JWT_SECRET = "policy-test-jwt-secret-000000002"
+TEST_TASK_API_JWT_AUDIENCE = "agenticai-policy-tests"
 TEST_WEBHOOK_SECRET = "policy-webhook-secret"
 
 
@@ -24,7 +26,8 @@ def rate_limited_client(
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET)
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TEST_TASK_API_AUTH_TOKEN)
+    monkeypatch.setenv("TASK_API_JWT_SECRET", TEST_TASK_API_JWT_SECRET)
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", TEST_TASK_API_JWT_AUDIENCE)
     monkeypatch.setenv("ENABLE_RATE_LIMITING", "true")
     monkeypatch.setenv("TASK_CREATE_RATE_LIMIT_REQUESTS", "1")
     monkeypatch.setenv("TASK_CREATE_RATE_LIMIT_WINDOW_SECONDS", "60")
@@ -52,8 +55,8 @@ def test_docs_disabled_outside_local_dev_test(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     try:
         app = create_app(start_coordinator=False)
@@ -83,8 +86,8 @@ def test_create_app_rejects_sqlite_in_production(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./agenticai.db")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
-    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    monkeypatch.setenv("TASK_API_JWT_SECRET", "secret")
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", "agenticai-prod")
     get_settings.cache_clear()
     try:
         with pytest.raises(ValueError, match="DATABASE_URL must not use sqlite"):
@@ -95,9 +98,14 @@ def test_create_app_rejects_sqlite_in_production(monkeypatch: pytest.MonkeyPatch
 
 def test_task_create_rate_limit_enforced(rate_limited_client: TestClient) -> None:
     """Task creation should return typed 429s once the configured limit is exceeded."""
+    token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=TEST_USER_ID,
+        org_id=TEST_ORG_ID,
+    )
     headers = {
-        "Authorization": f"Bearer {TEST_TASK_API_AUTH_TOKEN}",
-        "X-Actor-User-Id": TEST_USER_ID,
+        "Authorization": f"Bearer {token}",
     }
     first = rate_limited_client.post("/v1/tasks", headers=headers, json={"prompt": "first"})
     assert first.status_code == 202

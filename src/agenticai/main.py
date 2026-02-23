@@ -126,7 +126,6 @@ def create_app(
                 window_seconds=settings.task_create_rate_limit_window_seconds,
                 error_code="TASK_CREATE_RATE_LIMITED",
                 error_message="Too many task creation requests",
-                identity_header="X-Actor-User-Id",
             ),
         ),
     )
