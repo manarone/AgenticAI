@@ -150,9 +150,7 @@ class Settings(BaseSettings):
                     "ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
                 )
             if self.task_api_jwt_secret is None:
-                raise ValueError(
-                    "TASK_API_JWT_SECRET is required outside development/local/test"
-                )
+                raise ValueError("TASK_API_JWT_SECRET is required outside development/local/test")
 
         return self
 
