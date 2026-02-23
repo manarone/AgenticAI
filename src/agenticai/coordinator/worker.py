@@ -57,6 +57,7 @@ class NoOpPlannerExecutorAdapter:
     """Default adapter that marks tasks as successful."""
 
     def execute(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
+        """Return a successful result without external execution."""
         _ = handoff
         return ExecutionResult(success=True)
 
@@ -77,6 +78,7 @@ class CoordinatorWorker:
         queued_recovery_age_seconds: float = 30.0,
         running_timeout_seconds: float = 1800.0,
     ) -> None:
+        """Initialize worker loop settings and runtime dependencies."""
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be > 0")
         if batch_size < 1:
@@ -302,6 +304,7 @@ class CoordinatorWorker:
             )
 
     async def _process_message(self, message: QueuedMessage) -> None:
+        """Process one dequeued task message through risk and execution lifecycle."""
         payload = message.get("payload", {})
         raw_task_id = payload.get("task_id")
         if not isinstance(raw_task_id, str) or not raw_task_id:
@@ -426,6 +429,7 @@ class CoordinatorWorker:
         )
 
     def _resolve_effective_bypass_mode(self, org_id: str, user_id: str) -> BypassMode:
+        """Resolve effective bypass mode after applying org policy constraints."""
         with self._session_factory() as session:
             return resolve_effective_bypass_mode(session, org_id=org_id, user_id=user_id)
 
@@ -530,6 +534,7 @@ class CoordinatorWorker:
             )
 
     async def _execute_handoff(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
+        """Invoke adapter execution and normalize sync/async return styles."""
         execute = self._adapter.execute
         if inspect.iscoroutinefunction(execute):
             result = await execute(handoff)
@@ -543,6 +548,7 @@ class CoordinatorWorker:
         return result
 
     def _mark_task_running(self, task_id: str) -> PlannerExecutorHandoff | None:
+        """Transition a queued or approved-waiting task into RUNNING state."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
@@ -604,6 +610,7 @@ class CoordinatorWorker:
             )
 
     def _finalize_task(self, task_id: str, result: ExecutionResult) -> None:
+        """Persist terminal status updates after adapter execution completes."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:

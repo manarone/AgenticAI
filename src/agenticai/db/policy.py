@@ -14,6 +14,7 @@ _FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def _parse_bool(value: str) -> bool | None:
+    """Parse permissive boolean strings used in runtime setting values."""
     normalized = value.strip().lower()
     if normalized in _TRUE_VALUES:
         return True

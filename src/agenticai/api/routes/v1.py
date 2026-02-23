@@ -109,6 +109,7 @@ def _bypass_mode_response(
     org_bypass_allowed: bool,
     effective_bypass_mode: BypassMode,
 ) -> BypassModeResponse:
+    """Convert one bypass override row into API response payload."""
     return BypassModeResponse(
         user_id=override.user_id,
         org_id=override.org_id,
@@ -123,6 +124,7 @@ def _bypass_mode_response(
 
 
 def _audit_event_response(event: AuditEvent) -> AuditEventResponse:
+    """Convert one persisted audit row into API response payload."""
     payload = None
     if event.event_payload is not None:
         try:
