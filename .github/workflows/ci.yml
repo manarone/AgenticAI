@@ -49,13 +49,19 @@ jobs:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
           COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
           COOLIFY_APP_UUID_VAR: ${{ vars.COOLIFY_APP_UUID }}
+          COOLIFY_DEPLOY_REQUIRED: ${{ vars.COOLIFY_DEPLOY_REQUIRED }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           APP_UUID="${COOLIFY_APP_UUID:-${COOLIFY_APP_UUID_VAR}}"
+          REQUIRE_DEPLOY="$(echo "${COOLIFY_DEPLOY_REQUIRED:-false}" | tr '[:upper:]' '[:lower:]')"
 
           if [ -z "${COOLIFY_WEBHOOK}" ] || [ -z "${COOLIFY_TOKEN}" ] || [ -z "${APP_UUID}" ]; then
-            echo "::error::Missing Coolify deploy config. Configure COOLIFY_WEBHOOK + COOLIFY_TOKEN secrets and COOLIFY_APP_UUID (secret or repository variable)."
-            exit 1
+            if [ "${REQUIRE_DEPLOY}" = "true" ]; then
+              echo "::error::Missing Coolify deploy config. Configure COOLIFY_WEBHOOK + COOLIFY_TOKEN secrets and COOLIFY_APP_UUID (secret or repository variable)."
+              exit 1
+            fi
+            echo "::warning::Skipping Coolify deploy verification because deploy config is incomplete. Set COOLIFY_DEPLOY_REQUIRED=true to enforce failure when missing."
+            exit 0
           fi
 
           curl --fail-with-body --request GET "${COOLIFY_WEBHOOK}" \

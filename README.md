@@ -109,11 +109,12 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
 
 `CI` now triggers deployment to Coolify after tests pass on `main`.
 
-Required GitHub repository secrets:
+Required GitHub repository secrets (when deploy verification is enabled):
 
 - `COOLIFY_WEBHOOK`: Coolify deploy webhook URL for `agenticai-dev`
 - `COOLIFY_TOKEN`: Coolify API token used in the `Authorization: Bearer` header
 - `COOLIFY_APP_UUID`: Coolify app UUID (`kckwwog8owcw4ss0cwwkokcw`) (can be a repository variable instead)
+- `COOLIFY_DEPLOY_REQUIRED` repository variable: set to `true` to fail CI when deploy config is missing
 
 Recommended:
 
@@ -121,4 +122,4 @@ Recommended:
 - If you deploy via this workflow, disable overlapping auto-deploy triggers in Coolify to avoid double deployments.
 - The deploy job now validates the real Coolify deployment result (not just webhook success) by polling deployments for the current commit.
 - The container image includes `curl` so Coolify health checks can run for Dockerfile-based deploys.
-- If deploy credentials are not configured, the deploy job fails so `main` cannot appear healthy while deployment verification is skipped.
+- If deploy credentials are missing and `COOLIFY_DEPLOY_REQUIRED` is not `true`, the deploy job warns and skips verification.
