@@ -20,14 +20,22 @@ from agenticai.db.base import Base
 from agenticai.db.models import Organization, Task, TaskStatus, User
 from agenticai.db.session import build_engine
 from agenticai.main import create_app
+from tests.jwt_utils import make_task_api_jwt
 
 TEST_ORG_ID = "00000000-0000-0000-0000-000000000011"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000012"
-TEST_TASK_API_AUTH_TOKEN = "test-task-api-token"
-TASK_API_HEADERS = {
-    "Authorization": f"Bearer {TEST_TASK_API_AUTH_TOKEN}",
-    "X-Actor-User-Id": TEST_USER_ID,
-}
+TEST_TASK_API_JWT_SECRET = "coordinator-test-task-api-jwt-secret-4"
+TEST_TASK_API_JWT_AUDIENCE = "agenticai-coordinator-tests"
+
+
+def _task_api_headers() -> dict[str, str]:
+    token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=TEST_USER_ID,
+        org_id=TEST_ORG_ID,
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 class FailingAdapter:
@@ -63,7 +71,8 @@ def _coordinator_client(
     database_url = f"sqlite:///{tmp_path}/{uuid4()}.db"
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "test-webhook-secret")
-    monkeypatch.setenv("TASK_API_AUTH_TOKEN", TEST_TASK_API_AUTH_TOKEN)
+    monkeypatch.setenv("TASK_API_JWT_SECRET", TEST_TASK_API_JWT_SECRET)
+    monkeypatch.setenv("TASK_API_JWT_AUDIENCE", TEST_TASK_API_JWT_AUDIENCE)
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
     get_settings.cache_clear()
@@ -101,7 +110,7 @@ def _coordinator_client(
 def _create_task(client: TestClient, prompt: str) -> str:
     response = client.post(
         "/v1/tasks",
-        headers=TASK_API_HEADERS,
+        headers=_task_api_headers(),
         json={
             "org_id": TEST_ORG_ID,
             "requested_by_user_id": TEST_USER_ID,
@@ -124,7 +133,7 @@ def _wait_for_status(
     deadline = time.monotonic() + timeout_seconds
     last_payload: dict[str, object] | None = None
     while time.monotonic() < deadline:
-        response = client.get(f"/v1/tasks/{task_id}", headers=TASK_API_HEADERS)
+        response = client.get(f"/v1/tasks/{task_id}", headers=_task_api_headers())
         assert response.status_code == 200
         payload = response.json()
         last_payload = payload
@@ -213,7 +222,7 @@ def test_coordinator_preserves_canceled_tasks_during_execution(
         task_id = _create_task(client, "slow task for cancel")
         _wait_for_status(client, task_id, "RUNNING")
 
-        cancel_response = client.post(f"/v1/tasks/{task_id}/cancel", headers=TASK_API_HEADERS)
+        cancel_response = client.post(f"/v1/tasks/{task_id}/cancel", headers=_task_api_headers())
         assert cancel_response.status_code == 200
         assert cancel_response.json()["status"] == "CANCELED"
 

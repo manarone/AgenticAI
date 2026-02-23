@@ -1,11 +1,12 @@
-import hmac
+from datetime import timedelta
 from uuid import uuid4
 
-from pydantic import SecretStr
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from agenticai.db.models import Organization, User
+from tests.conftest import TEST_TASK_API_JWT_AUDIENCE, TEST_TASK_API_JWT_SECRET
+from tests.jwt_utils import make_task_api_jwt
 
 
 def _create_secondary_identity(client) -> dict[str, str]:
@@ -169,62 +170,77 @@ def test_task_routes_require_authentication(client) -> None:
     assert response.status_code == 401
 
 
-def test_task_routes_reject_non_uuid_actor_header(client, task_api_headers) -> None:
-    """Task APIs should reject malformed actor identifiers before DB lookup."""
-    response = client.get(
-        "/v1/tasks",
-        headers={**task_api_headers, "X-Actor-User-Id": "not-a-uuid"},
+def test_task_routes_reject_invalid_jwt_signature(client, seeded_identity) -> None:
+    """Task APIs should reject bearer JWTs signed with the wrong secret."""
+    invalid_token = make_task_api_jwt(
+        secret="wrong-secret-000000000000000000000",
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=seeded_identity["requested_by_user_id"],
+        org_id=seeded_identity["org_id"],
     )
+    response = client.get("/v1/tasks", headers={"Authorization": f"Bearer {invalid_token}"})
     assert response.status_code == 401
     assert response.json() == {
         "detail": {
             "code": "TASK_API_UNAUTHORIZED",
-            "message": "X-Actor-User-Id must be a valid UUID",
+            "message": "Invalid task API JWT",
         }
     }
 
 
-def test_task_routes_require_actor_signature_when_configured(client, task_api_headers) -> None:
-    """When actor signing secret is configured, requests must include a valid signature."""
-    actor_id = task_api_headers["X-Actor-User-Id"]
-    client.app.state.settings.task_api_actor_hmac_secret = SecretStr("actor-signing-secret")
-
-    missing_signature = client.get("/v1/tasks", headers=task_api_headers)
-    assert missing_signature.status_code == 401
-    assert missing_signature.json() == {
+def test_task_routes_reject_expired_jwt(client, seeded_identity) -> None:
+    """Task APIs should reject expired bearer JWTs."""
+    expired_token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=seeded_identity["requested_by_user_id"],
+        org_id=seeded_identity["org_id"],
+        expires_in=timedelta(seconds=-1),
+    )
+    response = client.get("/v1/tasks", headers={"Authorization": f"Bearer {expired_token}"})
+    assert response.status_code == 401
+    assert response.json() == {
         "detail": {
             "code": "TASK_API_UNAUTHORIZED",
-            "message": "Invalid or missing X-Actor-Signature header",
+            "message": "Task API JWT has expired",
         }
     }
 
-    invalid_signature = client.get(
-        "/v1/tasks",
-        headers={**task_api_headers, "X-Actor-Signature": "sha256=bad-signature"},
-    )
-    assert invalid_signature.status_code == 401
 
-    signature = hmac.new(
-        b"actor-signing-secret",
-        actor_id.encode("utf-8"),
-        "sha256",
-    ).hexdigest()
-    valid_response = client.get(
-        "/v1/tasks",
-        headers={**task_api_headers, "X-Actor-Signature": f"sha256={signature}"},
+def test_task_routes_reject_jwt_audience_mismatch(client, seeded_identity) -> None:
+    """Task APIs should reject JWTs with the wrong configured audience."""
+    wrong_audience_token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience="wrong-audience",
+        sub=seeded_identity["requested_by_user_id"],
+        org_id=seeded_identity["org_id"],
     )
-    assert valid_response.status_code == 200
+    response = client.get("/v1/tasks", headers={"Authorization": f"Bearer {wrong_audience_token}"})
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "code": "TASK_API_UNAUTHORIZED",
+            "message": "Task API JWT audience mismatch",
+        }
+    }
 
-    # Uppercase UUID should still work because server canonicalizes UUID casing.
-    uppercase_actor_response = client.get(
-        "/v1/tasks",
-        headers={
-            **task_api_headers,
-            "X-Actor-User-Id": actor_id.upper(),
-            "X-Actor-Signature": f"sha256={signature}",
-        },
+
+def test_task_routes_reject_jwt_org_user_mismatch(client, seeded_identity) -> None:
+    """Task APIs should reject tokens whose org claim does not match DB membership."""
+    mismatch_token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=seeded_identity["requested_by_user_id"],
+        org_id=str(uuid4()),
     )
-    assert uppercase_actor_response.status_code == 200
+    response = client.get("/v1/tasks", headers={"Authorization": f"Bearer {mismatch_token}"})
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "code": "TASK_API_UNAUTHORIZED",
+            "message": "Task API JWT org/user mismatch",
+        }
+    }
 
 
 def test_list_tasks(client, task_api_headers) -> None:
@@ -529,10 +545,13 @@ def test_cancel_task_rejects_invalid_uuid_path_param(client, task_api_headers) -
 def test_task_access_is_tenant_scoped(client, task_api_headers) -> None:
     """Users in one org cannot list/read/cancel tasks from another org."""
     second_identity = _create_secondary_identity(client)
-    second_headers = {
-        "Authorization": task_api_headers["Authorization"],
-        "X-Actor-User-Id": second_identity["requested_by_user_id"],
-    }
+    second_token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=second_identity["requested_by_user_id"],
+        org_id=second_identity["org_id"],
+    )
+    second_headers = {"Authorization": f"Bearer {second_token}"}
 
     own_task_response = client.post(
         "/v1/tasks",

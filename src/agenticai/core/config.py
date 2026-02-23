@@ -50,17 +50,17 @@ class Settings(BaseSettings):
         validation_alias="TASK_CREATE_RATE_LIMIT_WINDOW_SECONDS",
         gt=0,
     )
-    task_api_auth_token: SecretStr | None = Field(
+    task_api_jwt_secret: SecretStr | None = Field(
         default=None,
-        validation_alias="TASK_API_AUTH_TOKEN",
+        validation_alias="TASK_API_JWT_SECRET",
     )
-    task_api_actor_hmac_secret: SecretStr | None = Field(
-        default=None,
-        validation_alias="TASK_API_ACTOR_HMAC_SECRET",
+    task_api_jwt_audience: str = Field(
+        default="agenticai-v1",
+        validation_alias="TASK_API_JWT_AUDIENCE",
     )
-    allow_insecure_task_api: bool = Field(
-        default=False,
-        validation_alias="ALLOW_INSECURE_TASK_API",
+    task_api_jwt_algorithm: str = Field(
+        default="HS256",
+        validation_alias="TASK_API_JWT_ALGORITHM",
     )
     allow_insecure_telegram_webhook: bool = Field(
         default=False,
@@ -116,6 +116,12 @@ class Settings(BaseSettings):
         """Normalize BUS_BACKEND to lowercase for stable comparisons."""
         return str(value).lower()
 
+    @field_validator("task_api_jwt_algorithm", mode="before")
+    @classmethod
+    def normalize_task_api_jwt_algorithm(cls, value: str) -> str:
+        """Normalize JWT algorithm for stable comparisons."""
+        return str(value).upper()
+
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
         """Validate backend compatibility for the current scaffold."""
@@ -124,11 +130,17 @@ class Settings(BaseSettings):
         database_url = self.database_url.get_secret_value().strip().lower()
 
         supported_backends = {"inmemory", "redis"}
+        supported_task_api_jwt_algorithms = {"HS256"}
         if self.bus_backend not in supported_backends:
             options = ", ".join(sorted(supported_backends))
             raise ValueError(f"BUS_BACKEND must be one of: {options}")
         if self.bus_backend == "redis" and not self.redis_url:
             raise ValueError("REDIS_URL is required when BUS_BACKEND=redis")
+        if self.task_api_jwt_algorithm not in supported_task_api_jwt_algorithms:
+            options = ", ".join(sorted(supported_task_api_jwt_algorithms))
+            raise ValueError(f"TASK_API_JWT_ALGORITHM must be one of: {options}")
+        if not self.task_api_jwt_audience.strip():
+            raise ValueError("TASK_API_JWT_AUDIENCE must not be blank")
         if non_local_environment:
             if database_url.startswith("sqlite"):
                 raise ValueError("DATABASE_URL must not use sqlite outside development/local/test")
@@ -137,18 +149,8 @@ class Settings(BaseSettings):
                     "TELEGRAM_WEBHOOK_SECRET is required outside development/local/test unless "
                     "ALLOW_INSECURE_TELEGRAM_WEBHOOK=true"
                 )
-            if self.task_api_auth_token is None and not self.allow_insecure_task_api:
-                raise ValueError(
-                    "TASK_API_AUTH_TOKEN is required outside development/local/test unless "
-                    "ALLOW_INSECURE_TASK_API=true"
-                )
-            # When token auth is configured, actor binding stays mandatory.
-            # ALLOW_INSECURE_TASK_API only allows TASK_API_AUTH_TOKEN to be omitted.
-            if self.task_api_auth_token is not None and self.task_api_actor_hmac_secret is None:
-                raise ValueError(
-                    "TASK_API_ACTOR_HMAC_SECRET is required outside development/local/test when "
-                    "TASK_API_AUTH_TOKEN is configured"
-                )
+            if self.task_api_jwt_secret is None:
+                raise ValueError("TASK_API_JWT_SECRET is required outside development/local/test")
 
         return self
 

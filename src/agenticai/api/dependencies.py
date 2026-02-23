@@ -1,12 +1,13 @@
 """Shared FastAPI dependencies."""
 
-import hmac
 from collections.abc import Generator
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
+import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
+from jwt import ExpiredSignatureError, InvalidAudienceError, InvalidTokenError
 from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.bus.base import EventBus
@@ -58,107 +59,78 @@ def _parse_bearer_token(authorization: str | None) -> str | None:
     return token or None
 
 
-def _normalized_actor_signature(signature: str | None) -> str | None:
-    """Normalize supported actor signature formats to lowercase hex."""
-    if signature is None:
-        return None
-    normalized = signature.strip()
-    if normalized.lower().startswith("sha256="):
-        normalized = normalized.split("=", 1)[1]
-    return normalized.lower() or None
+def _task_api_unauthorized(message: str) -> HTTPException:
+    """Build a stable unauthorized exception payload for task APIs."""
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={
+            "code": "TASK_API_UNAUTHORIZED",
+            "message": message,
+        },
+    )
 
 
 def get_task_api_principal(
     request: Request,
     db: Annotated[Session, Depends(get_db_session)],
     authorization: Annotated[str | None, Header()] = None,
-    actor_user_id: Annotated[str | None, Header(alias="X-Actor-User-Id")] = None,
-    actor_signature: Annotated[str | None, Header(alias="X-Actor-Signature")] = None,
 ) -> TaskApiPrincipal:
-    """Authenticate a caller and resolve a user/org principal."""
+    """Authenticate a JWT caller and resolve a tenant-safe user/org principal."""
     settings = getattr(request.app.state, "settings", None)
     if settings is None:
         settings = get_settings()
 
-    expected_token = (
-        settings.task_api_auth_token.get_secret_value()
-        if settings.task_api_auth_token is not None
-        else None
+    jwt_secret = (
+        settings.task_api_jwt_secret.get_secret_value() if settings.task_api_jwt_secret else None
     )
-    if expected_token is None:
-        if not settings.allow_insecure_task_api:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "TASK_API_AUTH_MISCONFIGURED",
-                    "message": (
-                        "Task API authentication is required; set TASK_API_AUTH_TOKEN or "
-                        "ALLOW_INSECURE_TASK_API=true"
-                    ),
-                },
-            )
-    else:
-        presented_token = _parse_bearer_token(authorization)
-        if presented_token is None or not hmac.compare_digest(presented_token, expected_token):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "code": "TASK_API_UNAUTHORIZED",
-                    "message": "Invalid or missing bearer token",
-                },
-            )
-
-    if actor_user_id is None or not actor_user_id.strip():
+    if jwt_secret is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "code": "TASK_API_UNAUTHORIZED",
-                "message": "X-Actor-User-Id header is required",
+                "code": "TASK_API_AUTH_MISCONFIGURED",
+                "message": "Task API JWT auth requires TASK_API_JWT_SECRET",
             },
         )
-    normalized_actor_user_id = actor_user_id.strip()
+
+    presented_token = _parse_bearer_token(authorization)
+    if presented_token is None:
+        raise _task_api_unauthorized("Invalid or missing bearer token")
+
     try:
-        normalized_actor_user_id = str(UUID(normalized_actor_user_id))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "TASK_API_UNAUTHORIZED",
-                "message": "X-Actor-User-Id must be a valid UUID",
-            },
-        ) from exc
-
-    actor_hmac_secret = (
-        settings.task_api_actor_hmac_secret.get_secret_value()
-        if settings.task_api_actor_hmac_secret is not None
-        else None
-    )
-    if actor_hmac_secret is not None:
-        provided_signature = _normalized_actor_signature(actor_signature)
-        expected_signature = hmac.new(
-            actor_hmac_secret.encode("utf-8"),
-            normalized_actor_user_id.encode("utf-8"),
-            "sha256",
-        ).hexdigest()
-        if provided_signature is None or not hmac.compare_digest(
-            provided_signature,
-            expected_signature,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "code": "TASK_API_UNAUTHORIZED",
-                    "message": "Invalid or missing X-Actor-Signature header",
-                },
-            )
-
-    user = db.get(User, normalized_actor_user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "code": "TASK_API_UNAUTHORIZED",
-                "message": "Unknown actor user",
-            },
+        claims = jwt.decode(
+            presented_token,
+            jwt_secret,
+            algorithms=[settings.task_api_jwt_algorithm],
+            audience=settings.task_api_jwt_audience,
+            options={"require": ["sub", "org_id", "exp", "iat", "aud"]},
         )
-    return TaskApiPrincipal(org_id=user.org_id, user_id=user.id)
+    except ExpiredSignatureError as exc:
+        raise _task_api_unauthorized("Task API JWT has expired") from exc
+    except InvalidAudienceError as exc:
+        raise _task_api_unauthorized("Task API JWT audience mismatch") from exc
+    except InvalidTokenError as exc:
+        raise _task_api_unauthorized("Invalid task API JWT") from exc
+
+    raw_sub = claims.get("sub")
+    raw_org_id = claims.get("org_id")
+    if not isinstance(raw_sub, str) or not raw_sub.strip():
+        raise _task_api_unauthorized("Task API JWT claim 'sub' is required")
+    if not isinstance(raw_org_id, str) or not raw_org_id.strip():
+        raise _task_api_unauthorized("Task API JWT claim 'org_id' is required")
+
+    try:
+        normalized_sub = str(UUID(raw_sub.strip()))
+    except ValueError as exc:
+        raise _task_api_unauthorized("Task API JWT claim 'sub' must be a valid UUID") from exc
+    try:
+        normalized_org_id = str(UUID(raw_org_id.strip()))
+    except ValueError as exc:
+        raise _task_api_unauthorized("Task API JWT claim 'org_id' must be a valid UUID") from exc
+
+    user = db.get(User, normalized_sub)
+    if user is None:
+        raise _task_api_unauthorized("Unknown task API JWT subject")
+    if user.org_id != normalized_org_id:
+        raise _task_api_unauthorized("Task API JWT org/user mismatch")
+
+    return TaskApiPrincipal(org_id=normalized_org_id, user_id=normalized_sub)
