@@ -55,8 +55,12 @@ async def readyz(request: Request) -> JSONResponse:
     coordinator_required = bool(getattr(request.app.state, "coordinator_required", True))
     if coordinator_required:
         coordinator = getattr(request.app.state, "coordinator", None)
-        coordinator_running = bool(getattr(coordinator, "is_running", False))
-        if not coordinator_running:
+        coordinator_health_signal = getattr(coordinator, "is_healthy", None)
+        if coordinator_health_signal is None:
+            coordinator_healthy = bool(getattr(coordinator, "is_running", False))
+        else:
+            coordinator_healthy = bool(coordinator_health_signal)
+        if not coordinator_healthy:
             return _not_ready_response(
                 configured_backend=settings.bus_backend,
                 effective_backend=settings.bus_backend,

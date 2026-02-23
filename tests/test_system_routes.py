@@ -140,6 +140,13 @@ def test_healthz(client) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_healthz_echoes_request_id_header(client) -> None:
+    """Request correlation header should be propagated back on responses."""
+    response = client.get("/healthz", headers={"X-Request-ID": "req-health-001"})
+    assert response.status_code == 200
+    assert response.headers.get("X-Request-ID") == "req-health-001"
+
+
 def test_readyz(client) -> None:
     """Readiness returns healthy status when bus and DB are initialized."""
     response = client.get("/readyz")
@@ -168,6 +175,28 @@ def test_readyz_not_ready_when_coordinator_required_but_not_running(client) -> N
     """Readiness should fail when task processing loop is required but unavailable."""
     client.app.state.coordinator_required = True
     client.app.state.coordinator = None
+
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "configured_bus_backend": "inmemory",
+        "effective_bus_backend": "inmemory",
+    }
+
+
+def test_readyz_not_ready_when_coordinator_reports_unhealthy(client) -> None:
+    """Readiness should fail when coordinator health check reports unhealthy."""
+
+    class UnhealthyCoordinator:
+        is_running = True
+        is_healthy = False
+
+        async def stop(self) -> None:
+            return None
+
+    client.app.state.coordinator_required = True
+    client.app.state.coordinator = UnhealthyCoordinator()
 
     response = client.get("/readyz")
     assert response.status_code == 503

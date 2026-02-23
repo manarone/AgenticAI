@@ -133,6 +133,11 @@ class CoordinatorWorker:
         """Return True while the coordinator background loop task is active."""
         return self._runner_task is not None and not self._runner_task.done()
 
+    @property
+    def is_healthy(self) -> bool:
+        """Return True when coordinator loop is active and not stopping."""
+        return self.is_running and not self._stop_event.is_set()
+
     async def run(self) -> None:
         """Poll queue messages forever until stop is requested."""
         while not self._stop_event.is_set():

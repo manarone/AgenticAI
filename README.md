@@ -73,6 +73,10 @@ Current scaffold endpoints:
 - `GET /v1/tasks/{task_id}`
 - `POST /v1/tasks/{task_id}/cancel`
 
+Every HTTP response includes an `X-Request-ID` header. You can also provide
+`X-Request-ID` on requests and the same value will be propagated through logs
+and audit payloads for correlation.
+
 `/v1/tasks*` requires:
 
 - `Authorization: Bearer <jwt>`
@@ -102,7 +106,8 @@ Task creation supports idempotent retries with optional `Idempotency-Key` header
   - Default local value is `EXECUTION_RUNTIME_BACKEND=noop`
   - Container deploys can set `EXECUTION_RUNTIME_BACKEND=docker` for per-task containers
   - Docker backend requires access to a Docker Engine endpoint (for example mounted `/var/run/docker.sock`)
-  - `EXECUTION_DOCKER_ALLOW_FALLBACK=false` keeps startup fail-fast if Docker runtime init fails
+  - Container default `EXECUTION_DOCKER_ALLOW_FALLBACK=true` keeps startup healthy if Docker is unavailable
+  - Set `EXECUTION_DOCKER_ALLOW_FALLBACK=false` after socket wiring is validated to enforce fail-fast runtime checks
 - Set `TASK_API_JWT_SECRET` for `/v1/tasks*` authentication
 - Set `TASK_API_JWT_AUDIENCE` to the expected `aud` claim value (default `agenticai-v1`)
 - Optional: set `TASK_API_JWT_ALGORITHM` (only `HS256` is currently supported)
@@ -135,3 +140,12 @@ Recommended:
 - The deploy job now validates the real Coolify deployment result (not just webhook success) by polling deployments for the current commit.
 - The container image includes `curl` so Coolify health checks can run for Dockerfile-based deploys.
 - If deploy credentials are missing and `COOLIFY_DEPLOY_REQUIRED` is not `true`, the deploy job warns and skips verification.
+
+### Coolify Docker Runtime Checklist
+
+For `EXECUTION_RUNTIME_BACKEND=docker` in Coolify:
+
+1. Mount host Docker socket into app runtime (`/var/run/docker.sock:/var/run/docker.sock`).
+2. Ensure the app process user can access the socket group (for example `--group-add <docker-sock-gid>`).
+3. Redeploy and confirm app status is `running:healthy` and tasks show `execution_backend=docker`.
+4. Once confirmed, set `EXECUTION_DOCKER_ALLOW_FALLBACK=false` to fail fast on runtime regressions.

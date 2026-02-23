@@ -37,14 +37,17 @@ TEST_TASK_API_JWT_SECRET = "coordinator-test-task-api-jwt-secret-4"
 TEST_TASK_API_JWT_AUDIENCE = "agenticai-coordinator-tests"
 
 
-def _task_api_headers() -> dict[str, str]:
+def _task_api_headers(*, request_id: str | None = None) -> dict[str, str]:
     token = make_task_api_jwt(
         secret=TEST_TASK_API_JWT_SECRET,
         audience=TEST_TASK_API_JWT_AUDIENCE,
         sub=TEST_USER_ID,
         org_id=TEST_ORG_ID,
     )
-    return {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"}
+    if request_id is not None:
+        headers["X-Request-ID"] = request_id
+    return headers
 
 
 class FailingAdapter:
@@ -129,10 +132,15 @@ def _coordinator_client(
         get_settings.cache_clear()
 
 
-def _create_task(client: TestClient, prompt: str) -> str:
+def _create_task(
+    client: TestClient,
+    prompt: str,
+    *,
+    request_id: str | None = None,
+) -> str:
     response = client.post(
         "/v1/tasks",
-        headers=_task_api_headers(),
+        headers=_task_api_headers(request_id=request_id),
         json={
             "org_id": TEST_ORG_ID,
             "requested_by_user_id": TEST_USER_ID,
@@ -480,6 +488,65 @@ def test_coordinator_resumes_after_approval_and_completes(
         assert approvals_response.status_code == 200
         assert approvals_response.json()["count"] == 1
         assert approvals_response.json()["items"][0]["decision"] == "APPROVED"
+
+
+def test_end_to_end_approval_execution_audit_happy_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Risky task flow should include request correlation IDs in audit payloads."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        create_request_id = "req-create-approval-happy-path"
+        approve_request_id = "req-approve-approval-happy-path"
+
+        create_response = client.post(
+            "/v1/tasks",
+            headers=_task_api_headers(request_id=create_request_id),
+            json={
+                "org_id": TEST_ORG_ID,
+                "requested_by_user_id": TEST_USER_ID,
+                "prompt": "delete production release artifacts",
+            },
+        )
+        assert create_response.status_code == 202
+        assert create_response.headers.get("X-Request-ID") == create_request_id
+        task_id = str(create_response.json()["task_id"])
+
+        _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        approval = _wait_for_approval(client)
+
+        decision_response = client.post(
+            f"/v1/approvals/{approval['approval_id']}/decision",
+            headers=_task_api_headers(request_id=approve_request_id),
+            json={"decision": "APPROVED", "reason": "Audited and approved"},
+        )
+        assert decision_response.status_code == 200
+        assert decision_response.headers.get("X-Request-ID") == approve_request_id
+
+        final_payload = _wait_for_status(client, task_id, "SUCCEEDED")
+        assert final_payload["error_message"] is None
+        assert adapter.completed_calls == 1
+
+        events_response = client.get(
+            f"/v1/audit-events?task_id={task_id}",
+            headers=_task_api_headers(),
+        )
+        assert events_response.status_code == 200
+        items = events_response.json()["items"]
+        event_types = {item["event_type"] for item in items}
+        assert "task.lifecycle.waiting_approval" in event_types
+        assert "approval.decision.approved" in event_types
+        assert "task.lifecycle.succeeded" in event_types
+
+        request_ids = {
+            payload["request_id"]
+            for item in items
+            if isinstance(item.get("event_payload"), dict)
+            for payload in [item["event_payload"]]
+            if isinstance(payload.get("request_id"), str)
+        }
+        assert create_request_id in request_ids
+        assert approve_request_id in request_ids
 
 
 def test_coordinator_denied_approval_marks_task_failed(

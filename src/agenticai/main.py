@@ -7,7 +7,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
 
-from agenticai.api.middleware import EndpointRateLimitMiddleware, RateLimitRule
+from agenticai.api.middleware import (
+    EndpointRateLimitMiddleware,
+    RateLimitRule,
+    RequestCorrelationMiddleware,
+)
 from agenticai.api.router import api_router
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.factory import create_bus
@@ -143,6 +147,7 @@ def create_app(
         redoc_url="/redoc" if is_local_environment else None,
         openapi_url="/openapi.json" if is_local_environment else None,
     )
+    app.add_middleware(RequestCorrelationMiddleware)
     app.add_middleware(
         EndpointRateLimitMiddleware,
         enabled=settings.enable_rate_limiting,
