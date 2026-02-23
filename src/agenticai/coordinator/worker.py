@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agenticai.bus.base import TASK_QUEUE, EventBus, QueuedMessage
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
+from agenticai.coordinator.risk import RiskAssessment, classify_task_risk
 from agenticai.core.observability import log_event
-from agenticai.db.models import Task, TaskStatus
+from agenticai.db.models import Approval, ApprovalDecision, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 WORKER_EXCEPTIONS = BUS_EXCEPTIONS
@@ -29,6 +30,7 @@ class PlannerExecutorHandoff:
     org_id: str
     requested_by_user_id: str
     prompt: str | None
+    approved_resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,17 @@ class CoordinatorWorker:
         if handoff is None:
             return
 
+        if not handoff.approved_resume:
+            risk_assessment = classify_task_risk(handoff.prompt)
+            if risk_assessment.requires_approval:
+                await asyncio.to_thread(
+                    self._mark_task_waiting_approval,
+                    handoff.task_id,
+                    risk_assessment,
+                )
+                return
+            await asyncio.to_thread(self._record_task_risk, handoff.task_id, risk_assessment)
+
         execution_started_at = time.perf_counter()
         try:
             result = await self._execute_handoff(handoff)
@@ -375,6 +388,57 @@ class CoordinatorWorker:
             job_id=job_id,
         )
 
+    def _record_task_risk(self, task_id: str, assessment: RiskAssessment) -> None:
+        """Persist risk metadata for tasks that do not require approval."""
+        with self._session_factory() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                return
+            if task.status != TaskStatus.RUNNING.value:
+                return
+            task.risk_tier = assessment.tier.value
+            task.approval_required = False
+            task.updated_at = datetime.now(UTC)
+            session.add(task)
+            session.commit()
+
+    def _mark_task_waiting_approval(self, task_id: str, assessment: RiskAssessment) -> None:
+        """Pause task execution and persist approval request state."""
+        with self._session_factory() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                return
+            if task.status != TaskStatus.RUNNING.value:
+                return
+
+            now = datetime.now(UTC)
+            task.status = TaskStatus.WAITING_APPROVAL.value
+            task.risk_tier = assessment.tier.value
+            task.approval_required = True
+            task.approval_decision = ApprovalDecision.PENDING.value
+            task.approval_requested_at = now
+            task.updated_at = now
+            approval = Approval(
+                org_id=task.org_id,
+                task_id=task.id,
+                requested_by_user_id=task.requested_by_user_id,
+                risk_tier=assessment.tier.value,
+                decision=ApprovalDecision.PENDING.value,
+                reason=assessment.rationale,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(task)
+            session.add(approval)
+            session.commit()
+            log_event(
+                logger,
+                event="task.lifecycle.waiting_approval",
+                task_id=task.id,
+                risk_tier=assessment.tier.value,
+                approval_id=approval.id,
+            )
+
     async def _execute_handoff(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
         execute = self._adapter.execute
         if inspect.iscoroutinefunction(execute):
@@ -399,7 +463,11 @@ class CoordinatorWorker:
                     task_id=task_id,
                 )
                 return None
-            if task.status != TaskStatus.QUEUED.value:
+            resumable_waiting_approval = (
+                task.status == TaskStatus.WAITING_APPROVAL.value
+                and task.approval_decision == ApprovalDecision.APPROVED.value
+            )
+            if task.status != TaskStatus.QUEUED.value and not resumable_waiting_approval:
                 log_event(
                     logger,
                     level=logging.DEBUG,
@@ -411,6 +479,7 @@ class CoordinatorWorker:
             org_id = task.org_id
             requested_by_user_id = task.requested_by_user_id
             prompt = task.prompt
+            from_status = task.status
 
             now = datetime.now(UTC)
             task.status = TaskStatus.RUNNING.value
@@ -423,7 +492,7 @@ class CoordinatorWorker:
                 logger,
                 event="task.lifecycle.transition",
                 task_id=task.id,
-                from_status=TaskStatus.QUEUED.value,
+                from_status=from_status,
                 to_status=TaskStatus.RUNNING.value,
             )
 
@@ -432,6 +501,7 @@ class CoordinatorWorker:
                 org_id=org_id,
                 requested_by_user_id=requested_by_user_id,
                 prompt=prompt,
+                approved_resume=resumable_waiting_approval,
             )
 
     def _finalize_task(self, task_id: str, result: ExecutionResult) -> None:

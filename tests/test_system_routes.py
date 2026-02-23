@@ -4,7 +4,15 @@ from uuid import uuid4
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from agenticai.db.models import Organization, User
+from agenticai.db.models import (
+    Approval,
+    ApprovalDecision,
+    Organization,
+    RiskTier,
+    Task,
+    TaskStatus,
+    User,
+)
 from tests.conftest import TEST_TASK_API_JWT_AUDIENCE, TEST_TASK_API_JWT_SECRET
 from tests.jwt_utils import make_task_api_jwt
 
@@ -34,6 +42,39 @@ def _create_secondary_identity(client) -> dict[str, str]:
         "org_id": second_org_id,
         "requested_by_user_id": second_user_id,
     }
+
+
+def _create_approval_record(
+    client,
+    *,
+    org_id: str,
+    user_id: str,
+    task_status: TaskStatus,
+    decision: ApprovalDecision,
+    prompt: str = "review risky action",
+) -> tuple[str, str]:
+    """Seed one task+approval pair and return (task_id, approval_id)."""
+    with Session(bind=client.app.state.db_engine) as session:
+        task = Task(
+            org_id=org_id,
+            requested_by_user_id=user_id,
+            status=task_status.value,
+            prompt=prompt,
+            risk_tier=RiskTier.HIGH.value,
+            approval_required=True,
+            approval_decision=decision.value,
+        )
+        approval = Approval(
+            org_id=org_id,
+            task=task,
+            requested_by_user_id=user_id,
+            risk_tier=RiskTier.HIGH.value,
+            decision=decision.value,
+        )
+        session.add(task)
+        session.add(approval)
+        session.commit()
+        return task.id, approval.id
 
 
 def test_root(client) -> None:
@@ -583,3 +624,139 @@ def test_task_access_is_tenant_scoped(client, task_api_headers) -> None:
         client.post(f"/v1/tasks/{second_task_id}/cancel", headers=task_api_headers).status_code
         == 404
     )
+
+
+def test_list_approvals_supports_filtering_and_tenant_isolation(
+    client, seeded_identity, task_api_headers
+) -> None:
+    """Approval listing should be filterable and scoped to caller organization."""
+    _, own_pending_approval_id = _create_approval_record(
+        client,
+        org_id=seeded_identity["org_id"],
+        user_id=seeded_identity["requested_by_user_id"],
+        task_status=TaskStatus.WAITING_APPROVAL,
+        decision=ApprovalDecision.PENDING,
+    )
+    _create_approval_record(
+        client,
+        org_id=seeded_identity["org_id"],
+        user_id=seeded_identity["requested_by_user_id"],
+        task_status=TaskStatus.SUCCEEDED,
+        decision=ApprovalDecision.APPROVED,
+    )
+    second_identity = _create_secondary_identity(client)
+    _create_approval_record(
+        client,
+        org_id=second_identity["org_id"],
+        user_id=second_identity["requested_by_user_id"],
+        task_status=TaskStatus.WAITING_APPROVAL,
+        decision=ApprovalDecision.PENDING,
+    )
+
+    response = client.get("/v1/approvals", headers=task_api_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 2
+    assert {item["org_id"] for item in payload["items"]} == {seeded_identity["org_id"]}
+
+    pending_only = client.get("/v1/approvals?decision=PENDING", headers=task_api_headers)
+    assert pending_only.status_code == 200
+    pending_payload = pending_only.json()
+    assert pending_payload["count"] == 1
+    assert pending_payload["items"][0]["approval_id"] == own_pending_approval_id
+    assert pending_payload["items"][0]["task_status"] == "WAITING_APPROVAL"
+
+
+def test_decide_approval_rejects_when_task_is_not_waiting(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Decision endpoint should guard against non-WAITING_APPROVAL task states."""
+    _task_id, approval_id = _create_approval_record(
+        client,
+        org_id=seeded_identity["org_id"],
+        user_id=seeded_identity["requested_by_user_id"],
+        task_status=TaskStatus.FAILED,
+        decision=ApprovalDecision.PENDING,
+    )
+
+    response = client.post(
+        f"/v1/approvals/{approval_id}/decision",
+        headers=task_api_headers,
+        json={"decision": "APPROVED"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "code": "TASK_NOT_WAITING_APPROVAL",
+            "message": f"Task '{_task_id}' is not waiting for approval",
+        }
+    }
+
+
+def test_decide_approval_rolls_back_when_queue_unavailable(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Approve flow should keep approval pending if enqueue fails."""
+    task_id, approval_id = _create_approval_record(
+        client,
+        org_id=seeded_identity["org_id"],
+        user_id=seeded_identity["requested_by_user_id"],
+        task_status=TaskStatus.WAITING_APPROVAL,
+        decision=ApprovalDecision.PENDING,
+    )
+
+    def broken_enqueue(_queue: str, _job_id: str, _payload: dict[str, object]) -> bool:
+        raise RuntimeError("queue unavailable")
+
+    client.app.state.bus.enqueue = broken_enqueue
+    response = client.post(
+        f"/v1/approvals/{approval_id}/decision",
+        headers=task_api_headers,
+        json={"decision": "APPROVED", "reason": "okay"},
+    )
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "TASK_QUEUE_UNAVAILABLE",
+            "message": "Task enqueue failed because the queue backend is unavailable",
+        }
+    }
+
+    task_response = client.get(f"/v1/tasks/{task_id}", headers=task_api_headers)
+    assert task_response.status_code == 200
+    assert task_response.json()["status"] == "WAITING_APPROVAL"
+    assert task_response.json()["approval_decision"] == "PENDING"
+
+    pending = client.get("/v1/approvals?decision=PENDING", headers=task_api_headers)
+    assert pending.status_code == 200
+    assert pending.json()["count"] == 1
+    assert pending.json()["items"][0]["approval_id"] == approval_id
+
+
+def test_decide_approval_is_tenant_scoped(client, seeded_identity, task_api_headers) -> None:
+    """Users should not be able to decide approvals from another organization."""
+    second_identity = _create_secondary_identity(client)
+    _, approval_id = _create_approval_record(
+        client,
+        org_id=second_identity["org_id"],
+        user_id=second_identity["requested_by_user_id"],
+        task_status=TaskStatus.WAITING_APPROVAL,
+        decision=ApprovalDecision.PENDING,
+    )
+
+    response = client.post(
+        f"/v1/approvals/{approval_id}/decision",
+        headers=task_api_headers,
+        json={"decision": "DENIED"},
+    )
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "APPROVAL_NOT_FOUND",
+            "message": f"Approval '{approval_id}' was not found",
+        }
+    }
