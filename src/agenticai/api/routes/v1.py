@@ -17,6 +17,9 @@ from agenticai.api.dependencies import (
 )
 from agenticai.api.responses import build_error_response
 from agenticai.api.schemas.tasks import (
+    ApprovalDecisionRequest,
+    ApprovalListResponse,
+    ApprovalResponse,
     ErrorResponse,
     TaskCreateRequest,
     TaskListResponse,
@@ -25,7 +28,7 @@ from agenticai.api.schemas.tasks import (
 from agenticai.bus.base import TASK_QUEUE, EventBus
 from agenticai.bus.exceptions import QUEUE_EXCEPTIONS
 from agenticai.core.observability import log_event
-from agenticai.db.models import Task, TaskStatus
+from agenticai.db.models import Approval, ApprovalDecision, Task, TaskStatus
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 DBSession = Annotated[Session, Depends(get_db_session)]
@@ -50,12 +53,33 @@ def _task_response(task: Task) -> TaskResponse:
         org_id=task.org_id,
         requested_by_user_id=task.requested_by_user_id,
         status=TaskStatus(task.status),
+        risk_tier=task.risk_tier,
+        approval_required=task.approval_required,
+        approval_decision=task.approval_decision,
         prompt=task.prompt,
         error_message=task.error_message,
         created_at=task.created_at,
         updated_at=task.updated_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
+    )
+
+
+def _approval_response(approval: Approval, *, task_status: str) -> ApprovalResponse:
+    """Convert an approval ORM record into API response payload."""
+    return ApprovalResponse(
+        approval_id=approval.id,
+        task_id=approval.task_id,
+        org_id=approval.org_id,
+        risk_tier=approval.risk_tier,
+        decision=approval.decision,
+        reason=approval.reason,
+        requested_by_user_id=approval.requested_by_user_id,
+        decided_by_user_id=approval.decided_by_user_id,
+        created_at=approval.created_at,
+        updated_at=approval.updated_at,
+        decided_at=approval.decided_at,
+        task_status=task_status,
     )
 
 
@@ -229,6 +253,160 @@ def create_task(
         status=task.status,
     )
     return _task_response(task)
+
+
+@router.get("/approvals", response_model=ApprovalListResponse)
+def list_approvals(
+    db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+    limit: Annotated[int, Query(ge=1, le=MAX_TASK_LIST_LIMIT)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    decision: Annotated[ApprovalDecision | None, Query()] = None,
+) -> ApprovalListResponse:
+    """List approvals scoped to the authenticated principal organization."""
+    filters = [Approval.org_id == principal.org_id]
+    if decision is not None:
+        filters.append(Approval.decision == decision.value)
+
+    statement = (
+        select(Approval, Task.status)
+        .join(Task, Task.id == Approval.task_id)
+        .where(*filters)
+        .order_by(Approval.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = db.execute(statement).all()
+    total_count = db.execute(
+        select(func.count()).select_from(Approval).where(*filters)
+    ).scalar_one()
+    items = [_approval_response(row[0], task_status=row[1]) for row in rows]
+    return ApprovalListResponse(items=items, count=int(total_count))
+
+
+@router.post(
+    "/approvals/{approval_id}/decision",
+    response_model=ApprovalResponse,
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+def decide_approval(
+    approval_id: UUID,
+    payload: ApprovalDecisionRequest,
+    db: DBSession,
+    bus: EventBusDep,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+) -> ApprovalResponse | JSONResponse:
+    """Apply an approval decision and resume or fail task lifecycle."""
+    approval_id_str = str(approval_id)
+    row = db.execute(
+        select(Approval, Task)
+        .join(Task, Task.id == Approval.task_id)
+        .where(
+            Approval.id == approval_id_str,
+            Approval.org_id == principal.org_id,
+            Task.org_id == principal.org_id,
+        )
+    ).one_or_none()
+    if row is None:
+        return build_error_response(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="APPROVAL_NOT_FOUND",
+            message=f"Approval '{approval_id_str}' was not found",
+        )
+    approval, task = row
+
+    if approval.decision != ApprovalDecision.PENDING.value:
+        return build_error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            code="APPROVAL_ALREADY_DECIDED",
+            message=f"Approval '{approval_id_str}' is already {approval.decision}",
+        )
+    if task.status != TaskStatus.WAITING_APPROVAL.value:
+        return build_error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            code="TASK_NOT_WAITING_APPROVAL",
+            message=f"Task '{task.id}' is not waiting for approval",
+        )
+
+    decision_time = datetime.now(UTC)
+    normalized_reason = None
+    if payload.reason is not None:
+        normalized_reason = payload.reason.strip() or None
+    approval.decision = payload.decision.value
+    approval.reason = normalized_reason
+    approval.decided_by_user_id = principal.user_id
+    approval.decided_at = decision_time
+    approval.updated_at = decision_time
+    task.approval_decision = payload.decision.value
+    task.approval_decided_at = decision_time
+    task.updated_at = decision_time
+
+    if payload.decision == ApprovalDecision.DENIED:
+        task.status = TaskStatus.FAILED.value
+        task.error_message = normalized_reason or "Task denied by approver"
+        task.completed_at = decision_time
+        task.approved_by_user_id = None
+        db.add(approval)
+        db.add(task)
+        db.commit()
+        db.refresh(approval)
+        log_event(
+            logger,
+            event="approval.decision.denied",
+            approval_id=approval.id,
+            task_id=task.id,
+            org_id=task.org_id,
+            decided_by_user_id=principal.user_id,
+        )
+        return _approval_response(approval, task_status=task.status)
+
+    task.approved_by_user_id = principal.user_id
+    task.error_message = None
+    task.completed_at = None
+    db.add(approval)
+    db.add(task)
+    db.flush()
+
+    try:
+        accepted = bus.enqueue(
+            TASK_QUEUE,
+            task.id,
+            {
+                "task_id": task.id,
+                "org_id": task.org_id,
+                "requested_by_user_id": task.requested_by_user_id,
+                "status": task.status,
+                "approval_id": approval.id,
+                "approval_decision": approval.decision,
+            },
+        )
+    except QUEUE_EXCEPTIONS:
+        accepted = False
+        logger.exception("Failed to enqueue approved task %s", task.id)
+    if not accepted:
+        db.rollback()
+        return build_error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="TASK_QUEUE_UNAVAILABLE",
+            message="Task enqueue failed because the queue backend is unavailable",
+        )
+
+    db.commit()
+    db.refresh(approval)
+    log_event(
+        logger,
+        event="approval.decision.approved",
+        approval_id=approval.id,
+        task_id=task.id,
+        org_id=task.org_id,
+        decided_by_user_id=principal.user_id,
+    )
+    return _approval_response(approval, task_status=task.status)
 
 
 @router.get(

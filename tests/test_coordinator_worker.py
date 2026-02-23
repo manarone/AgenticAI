@@ -60,6 +60,18 @@ class SlowAdapter:
         return ExecutionResult(success=True)
 
 
+class CountingAdapter:
+    """Adapter that records execution calls while succeeding."""
+
+    def __init__(self) -> None:
+        self.completed_calls = 0
+
+    def execute(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
+        _ = handoff
+        self.completed_calls += 1
+        return ExecutionResult(success=True)
+
+
 @contextmanager
 def _coordinator_client(
     monkeypatch: pytest.MonkeyPatch,
@@ -158,6 +170,22 @@ def _wait_until(
             return
         time.sleep(poll_seconds)
     pytest.fail("Timed out waiting for expected condition")
+
+
+def _wait_for_approval(
+    client: TestClient,
+    *,
+    timeout_seconds: float = 3.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        response = client.get("/v1/approvals", headers=_task_api_headers())
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["count"] > 0:
+            return payload["items"][0]
+        time.sleep(0.02)
+    pytest.fail("Timed out waiting for approval record")
 
 
 def test_coordinator_transitions_task_to_succeeded(
@@ -324,3 +352,76 @@ def test_coordinator_recovery_times_out_stale_running_task(
             assert recovered.status == TaskStatus.TIMED_OUT.value
             assert recovered.completed_at is not None
             assert recovered.error_message == "Coordinator recovery timed out a stale RUNNING task"
+
+
+def test_coordinator_pauses_risky_task_waiting_for_approval(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Risky prompts should pause at WAITING_APPROVAL before adapter execution."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        task_id = _create_task(client, "delete production deploy pipeline")
+        payload = _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        assert payload["risk_tier"] == "HIGH"
+        assert payload["approval_required"] is True
+        assert payload["approval_decision"] == "PENDING"
+        assert payload["completed_at"] is None
+        assert adapter.completed_calls == 0
+
+        approval = _wait_for_approval(client)
+        assert approval["task_id"] == task_id
+        assert approval["decision"] == "PENDING"
+        assert approval["task_status"] == "WAITING_APPROVAL"
+
+
+def test_coordinator_resumes_after_approval_and_completes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Approved risky tasks should resume once and complete successfully."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        task_id = _create_task(client, "delete production cache entries")
+        _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        approval = _wait_for_approval(client)
+
+        decision_response = client.post(
+            f"/v1/approvals/{approval['approval_id']}/decision",
+            headers=_task_api_headers(),
+            json={"decision": "APPROVED", "reason": "Reviewed and approved"},
+        )
+        assert decision_response.status_code == 200
+        assert decision_response.json()["decision"] == "APPROVED"
+
+        payload = _wait_for_status(client, task_id, "SUCCEEDED")
+        assert payload["approval_decision"] == "APPROVED"
+        assert payload["error_message"] is None
+        assert adapter.completed_calls == 1
+
+        approvals_response = client.get("/v1/approvals", headers=_task_api_headers())
+        assert approvals_response.status_code == 200
+        assert approvals_response.json()["count"] == 1
+        assert approvals_response.json()["items"][0]["decision"] == "APPROVED"
+
+
+def test_coordinator_denied_approval_marks_task_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Denied approvals should terminate lifecycle without execution."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        task_id = _create_task(client, "delete production user data")
+        _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        approval = _wait_for_approval(client)
+
+        decision_response = client.post(
+            f"/v1/approvals/{approval['approval_id']}/decision",
+            headers=_task_api_headers(),
+            json={"decision": "DENIED", "reason": "Unsafe request"},
+        )
+        assert decision_response.status_code == 200
+        assert decision_response.json()["decision"] == "DENIED"
+
+        payload = _wait_for_status(client, task_id, "FAILED")
+        assert payload["approval_decision"] == "DENIED"
+        assert payload["error_message"] == "Unsafe request"
+        assert adapter.completed_calls == 0
