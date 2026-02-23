@@ -16,7 +16,9 @@ from agenticai.bus.base import TASK_QUEUE, EventBus, QueuedMessage
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.coordinator.risk import RiskAssessment, classify_task_risk
 from agenticai.core.observability import log_event
-from agenticai.db.models import Approval, ApprovalDecision, Task, TaskStatus
+from agenticai.db.audit import add_audit_event
+from agenticai.db.models import Approval, ApprovalDecision, BypassMode, Task, TaskStatus
+from agenticai.db.policy import bypass_allows_risk, resolve_effective_bypass_mode
 
 logger = logging.getLogger(__name__)
 WORKER_EXCEPTIONS = BUS_EXCEPTIONS
@@ -55,6 +57,7 @@ class NoOpPlannerExecutorAdapter:
     """Default adapter that marks tasks as successful."""
 
     def execute(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
+        """Return a successful result without external execution."""
         _ = handoff
         return ExecutionResult(success=True)
 
@@ -75,6 +78,7 @@ class CoordinatorWorker:
         queued_recovery_age_seconds: float = 30.0,
         running_timeout_seconds: float = 1800.0,
     ) -> None:
+        """Initialize worker loop settings and runtime dependencies."""
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be > 0")
         if batch_size < 1:
@@ -278,6 +282,15 @@ class CoordinatorWorker:
                 task.completed_at = marked_at
                 task.updated_at = marked_at
                 session.add(task)
+                add_audit_event(
+                    session,
+                    org_id=task.org_id,
+                    task_id=task.id,
+                    actor_user_id=task.requested_by_user_id,
+                    event_type="task.lifecycle.timed_out",
+                    event_payload={"status": task.status},
+                    created_at=marked_at,
+                )
                 log_event(
                     logger,
                     event="task.recovery.running_timed_out",
@@ -291,6 +304,7 @@ class CoordinatorWorker:
             )
 
     async def _process_message(self, message: QueuedMessage) -> None:
+        """Process one dequeued task message through risk and execution lifecycle."""
         payload = message.get("payload", {})
         raw_task_id = payload.get("task_id")
         if not isinstance(raw_task_id, str) or not raw_task_id:
@@ -318,13 +332,39 @@ class CoordinatorWorker:
         if not handoff.approved_resume:
             risk_assessment = classify_task_risk(handoff.prompt)
             if risk_assessment.requires_approval:
+                bypass_mode = await asyncio.to_thread(
+                    self._resolve_effective_bypass_mode,
+                    handoff.org_id,
+                    handoff.requested_by_user_id,
+                )
+                if bypass_allows_risk(mode=bypass_mode, risk_tier=risk_assessment.tier):
+                    await asyncio.to_thread(
+                        self._record_task_risk,
+                        handoff.task_id,
+                        risk_assessment,
+                        bypass_mode,
+                    )
+                    log_event(
+                        logger,
+                        event="policy.bypass.applied",
+                        task_id=handoff.task_id,
+                        bypass_mode=bypass_mode.value,
+                        risk_tier=risk_assessment.tier.value,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self._mark_task_waiting_approval,
+                        handoff.task_id,
+                        risk_assessment,
+                        bypass_mode,
+                    )
+                    return
+            else:
                 await asyncio.to_thread(
-                    self._mark_task_waiting_approval,
+                    self._record_task_risk,
                     handoff.task_id,
                     risk_assessment,
                 )
-                return
-            await asyncio.to_thread(self._record_task_risk, handoff.task_id, risk_assessment)
 
         execution_started_at = time.perf_counter()
         try:
@@ -388,21 +428,62 @@ class CoordinatorWorker:
             job_id=job_id,
         )
 
-    def _record_task_risk(self, task_id: str, assessment: RiskAssessment) -> None:
-        """Persist risk metadata for tasks that do not require approval."""
+    def _resolve_effective_bypass_mode(self, org_id: str, user_id: str) -> BypassMode:
+        """Resolve effective bypass mode after applying org policy constraints."""
+        with self._session_factory() as session:
+            return resolve_effective_bypass_mode(session, org_id=org_id, user_id=user_id)
+
+    def _record_task_risk(
+        self,
+        task_id: str,
+        assessment: RiskAssessment,
+        bypass_mode: BypassMode = BypassMode.DISABLED,
+    ) -> None:
+        """Persist risk metadata when approval is not required or bypass is applied."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
                 return
             if task.status != TaskStatus.RUNNING.value:
                 return
+            now = datetime.now(UTC)
             task.risk_tier = assessment.tier.value
             task.approval_required = False
-            task.updated_at = datetime.now(UTC)
+            task.updated_at = now
             session.add(task)
+            add_audit_event(
+                session,
+                org_id=task.org_id,
+                task_id=task.id,
+                actor_user_id=task.requested_by_user_id,
+                event_type="task.lifecycle.risk_assessed",
+                event_payload={
+                    "risk_tier": assessment.tier.value,
+                    "approval_required": False,
+                },
+                created_at=now,
+            )
+            if bypass_mode != BypassMode.DISABLED:
+                add_audit_event(
+                    session,
+                    org_id=task.org_id,
+                    task_id=task.id,
+                    actor_user_id=task.requested_by_user_id,
+                    event_type="policy.bypass.applied",
+                    event_payload={
+                        "bypass_mode": bypass_mode.value,
+                        "risk_tier": assessment.tier.value,
+                    },
+                    created_at=now,
+                )
             session.commit()
 
-    def _mark_task_waiting_approval(self, task_id: str, assessment: RiskAssessment) -> None:
+    def _mark_task_waiting_approval(
+        self,
+        task_id: str,
+        assessment: RiskAssessment,
+        bypass_mode: BypassMode = BypassMode.DISABLED,
+    ) -> None:
         """Pause task execution and persist approval request state."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
@@ -430,6 +511,19 @@ class CoordinatorWorker:
             )
             session.add(task)
             session.add(approval)
+            add_audit_event(
+                session,
+                org_id=task.org_id,
+                task_id=task.id,
+                actor_user_id=task.requested_by_user_id,
+                event_type="task.lifecycle.waiting_approval",
+                event_payload={
+                    "risk_tier": assessment.tier.value,
+                    "approval_id": approval.id,
+                    "bypass_mode": bypass_mode.value,
+                },
+                created_at=now,
+            )
             session.commit()
             log_event(
                 logger,
@@ -440,6 +534,7 @@ class CoordinatorWorker:
             )
 
     async def _execute_handoff(self, handoff: PlannerExecutorHandoff) -> ExecutionResult:
+        """Invoke adapter execution and normalize sync/async return styles."""
         execute = self._adapter.execute
         if inspect.iscoroutinefunction(execute):
             result = await execute(handoff)
@@ -453,6 +548,7 @@ class CoordinatorWorker:
         return result
 
     def _mark_task_running(self, task_id: str) -> PlannerExecutorHandoff | None:
+        """Transition a queued or approved-waiting task into RUNNING state."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
@@ -487,6 +583,15 @@ class CoordinatorWorker:
             task.updated_at = now
             task.error_message = None
             session.add(task)
+            add_audit_event(
+                session,
+                org_id=task.org_id,
+                task_id=task.id,
+                actor_user_id=task.requested_by_user_id,
+                event_type="task.lifecycle.running",
+                event_payload={"from_status": from_status},
+                created_at=now,
+            )
             session.commit()
             log_event(
                 logger,
@@ -505,6 +610,7 @@ class CoordinatorWorker:
             )
 
     def _finalize_task(self, task_id: str, result: ExecutionResult) -> None:
+        """Persist terminal status updates after adapter execution completes."""
         with self._session_factory() as session:
             task = session.get(Task, task_id)
             if task is None:
@@ -540,6 +646,15 @@ class CoordinatorWorker:
             task.completed_at = now
             task.updated_at = now
             session.add(task)
+            add_audit_event(
+                session,
+                org_id=task.org_id,
+                task_id=task.id,
+                actor_user_id=task.requested_by_user_id,
+                event_type=f"task.lifecycle.{final_status.lower()}",
+                event_payload={"status": final_status, "error_message": task.error_message},
+                created_at=now,
+            )
             session.commit()
             log_event(
                 logger,

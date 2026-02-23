@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime
+from json import JSONDecodeError, loads
 from typing import Annotated
 from uuid import UUID
 
@@ -20,6 +21,10 @@ from agenticai.api.schemas.tasks import (
     ApprovalDecisionRequest,
     ApprovalListResponse,
     ApprovalResponse,
+    AuditEventListResponse,
+    AuditEventResponse,
+    BypassModeResponse,
+    BypassModeUpdateRequest,
     ErrorResponse,
     TaskCreateRequest,
     TaskListResponse,
@@ -28,7 +33,22 @@ from agenticai.api.schemas.tasks import (
 from agenticai.bus.base import TASK_QUEUE, EventBus
 from agenticai.bus.exceptions import QUEUE_EXCEPTIONS
 from agenticai.core.observability import log_event
-from agenticai.db.models import Approval, ApprovalDecision, Task, TaskStatus
+from agenticai.db.audit import add_audit_event
+from agenticai.db.models import (
+    Approval,
+    ApprovalDecision,
+    AuditEvent,
+    BypassMode,
+    Task,
+    TaskStatus,
+    User,
+    UserPolicyOverride,
+)
+from agenticai.db.policy import (
+    get_user_policy_override,
+    org_allows_user_bypass,
+    resolve_effective_bypass_mode,
+)
 
 router = APIRouter(prefix="/v1", tags=["v1"])
 DBSession = Annotated[Session, Depends(get_db_session)]
@@ -80,6 +100,47 @@ def _approval_response(approval: Approval, *, task_status: str) -> ApprovalRespo
         updated_at=approval.updated_at,
         decided_at=approval.decided_at,
         task_status=task_status,
+    )
+
+
+def _bypass_mode_response(
+    override: UserPolicyOverride,
+    *,
+    org_bypass_allowed: bool,
+    effective_bypass_mode: BypassMode,
+) -> BypassModeResponse:
+    """Convert one bypass override row into API response payload."""
+    return BypassModeResponse(
+        user_id=override.user_id,
+        org_id=override.org_id,
+        bypass_mode=override.bypass_mode,
+        effective_bypass_mode=effective_bypass_mode,
+        org_bypass_allowed=org_bypass_allowed,
+        reason=override.reason,
+        expires_at=override.expires_at,
+        created_at=override.created_at,
+        updated_at=override.updated_at,
+    )
+
+
+def _audit_event_response(event: AuditEvent) -> AuditEventResponse:
+    """Convert one persisted audit row into API response payload."""
+    payload = None
+    if event.event_payload is not None:
+        try:
+            decoded_payload = loads(event.event_payload)
+            if isinstance(decoded_payload, dict):
+                payload = decoded_payload
+        except JSONDecodeError:
+            payload = {"raw_payload": event.event_payload}
+    return AuditEventResponse(
+        audit_event_id=event.id,
+        org_id=event.org_id,
+        task_id=event.task_id,
+        actor_user_id=event.actor_user_id,
+        event_type=event.event_type,
+        event_payload=payload,
+        created_at=event.created_at,
     )
 
 
@@ -202,6 +263,16 @@ def create_task(
             message="Task could not be persisted",
         )
     db.refresh(task)
+    add_audit_event(
+        db,
+        org_id=task.org_id,
+        task_id=task.id,
+        actor_user_id=task.requested_by_user_id,
+        event_type="task.lifecycle.created",
+        event_payload={"status": task.status},
+        created_at=now,
+    )
+    db.commit()
     log_event(
         logger,
         event="task.lifecycle.created",
@@ -232,6 +303,15 @@ def create_task(
         task.completed_at = failure_time
         task.updated_at = failure_time
         db.add(task)
+        add_audit_event(
+            db,
+            org_id=task.org_id,
+            task_id=task.id,
+            actor_user_id=task.requested_by_user_id,
+            event_type="task.lifecycle.enqueue_failed",
+            event_payload={"status": task.status, "queue": TASK_QUEUE},
+            created_at=failure_time,
+        )
         db.commit()
         log_event(
             logger,
@@ -252,6 +332,15 @@ def create_task(
         queue=TASK_QUEUE,
         status=task.status,
     )
+    add_audit_event(
+        db,
+        org_id=task.org_id,
+        task_id=task.id,
+        actor_user_id=task.requested_by_user_id,
+        event_type="task.lifecycle.enqueued",
+        event_payload={"status": task.status, "queue": TASK_QUEUE},
+    )
+    db.commit()
     return _task_response(task)
 
 
@@ -353,6 +442,24 @@ def decide_approval(
         task.approved_by_user_id = None
         db.add(approval)
         db.add(task)
+        add_audit_event(
+            db,
+            org_id=task.org_id,
+            task_id=task.id,
+            actor_user_id=principal.user_id,
+            event_type="approval.decision.denied",
+            event_payload={"approval_id": approval.id, "reason": normalized_reason},
+            created_at=decision_time,
+        )
+        add_audit_event(
+            db,
+            org_id=task.org_id,
+            task_id=task.id,
+            actor_user_id=principal.user_id,
+            event_type="task.lifecycle.failed",
+            event_payload={"status": task.status, "reason": task.error_message},
+            created_at=decision_time,
+        )
         db.commit()
         db.refresh(approval)
         log_event(
@@ -396,6 +503,15 @@ def decide_approval(
             message="Task enqueue failed because the queue backend is unavailable",
         )
 
+    add_audit_event(
+        db,
+        org_id=task.org_id,
+        task_id=task.id,
+        actor_user_id=principal.user_id,
+        event_type="approval.decision.approved",
+        event_payload={"approval_id": approval.id, "reason": normalized_reason},
+        created_at=decision_time,
+    )
     db.commit()
     db.refresh(approval)
     log_event(
@@ -407,6 +523,143 @@ def decide_approval(
         decided_by_user_id=principal.user_id,
     )
     return _approval_response(approval, task_status=task.status)
+
+
+@router.post(
+    "/users/{user_id}/bypass-mode",
+    response_model=BypassModeResponse,
+    responses={
+        401: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
+)
+def update_user_bypass_mode(
+    user_id: UUID,
+    payload: BypassModeUpdateRequest,
+    db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+) -> BypassModeResponse | JSONResponse:
+    """Set bypass mode for the authenticated user with org policy enforcement."""
+    user_id_str = str(user_id)
+    if user_id_str != principal.user_id:
+        return build_error_response(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="BYPASS_MODE_FORBIDDEN",
+            message="You may only update your own bypass mode",
+        )
+
+    user = db.get(User, user_id_str)
+    if user is None or user.org_id != principal.org_id:
+        return build_error_response(
+            status_code=status.HTTP_404_NOT_FOUND,
+            code="USER_NOT_FOUND",
+            message=f"User '{user_id_str}' was not found",
+        )
+
+    org_bypass_allowed = org_allows_user_bypass(db, principal.org_id)
+    now = datetime.now(UTC)
+    requested_mode = payload.bypass_mode
+    if requested_mode != BypassMode.DISABLED and not org_bypass_allowed:
+        add_audit_event(
+            db,
+            org_id=principal.org_id,
+            actor_user_id=principal.user_id,
+            event_type="policy.bypass.blocked_by_org",
+            event_payload={"requested_mode": requested_mode.value},
+            created_at=now,
+        )
+        db.commit()
+        return build_error_response(
+            status_code=status.HTTP_409_CONFLICT,
+            code="ORG_POLICY_BYPASS_DISABLED",
+            message="Organization policy currently disallows user bypass overrides",
+        )
+
+    override = get_user_policy_override(
+        db,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+    )
+    if override is None:
+        override = UserPolicyOverride(
+            org_id=principal.org_id,
+            user_id=principal.user_id,
+            bypass_mode=BypassMode.DISABLED.value,
+            created_at=now,
+            updated_at=now,
+        )
+    normalized_reason = None
+    if payload.reason is not None:
+        normalized_reason = payload.reason.strip() or None
+    override.bypass_mode = requested_mode.value
+    override.reason = normalized_reason
+    override.expires_at = payload.expires_at
+    override.updated_at = now
+    db.add(override)
+    db.flush()
+
+    effective_mode = resolve_effective_bypass_mode(
+        db,
+        org_id=principal.org_id,
+        user_id=principal.user_id,
+    )
+    add_audit_event(
+        db,
+        org_id=principal.org_id,
+        actor_user_id=principal.user_id,
+        event_type="policy.bypass.updated",
+        event_payload={
+            "requested_mode": requested_mode.value,
+            "effective_mode": effective_mode.value,
+            "org_bypass_allowed": org_bypass_allowed,
+        },
+        created_at=now,
+    )
+    db.commit()
+    db.refresh(override)
+    return _bypass_mode_response(
+        override,
+        org_bypass_allowed=org_bypass_allowed,
+        effective_bypass_mode=effective_mode,
+    )
+
+
+@router.get("/audit-events", response_model=AuditEventListResponse)
+def list_audit_events(
+    db: DBSession,
+    principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
+    limit: Annotated[int, Query(ge=1, le=MAX_TASK_LIST_LIMIT)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    task_id: Annotated[UUID | None, Query()] = None,
+    actor_user_id: Annotated[UUID | None, Query()] = None,
+    event_type: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+) -> AuditEventListResponse:
+    """List tenant-scoped audit events for policy and lifecycle operations."""
+    filters = [AuditEvent.org_id == principal.org_id]
+    if task_id is not None:
+        filters.append(AuditEvent.task_id == str(task_id))
+    if actor_user_id is not None:
+        filters.append(AuditEvent.actor_user_id == str(actor_user_id))
+    if event_type is not None:
+        filters.append(AuditEvent.event_type == event_type)
+
+    statement = (
+        select(AuditEvent)
+        .where(*filters)
+        .order_by(AuditEvent.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    items = db.execute(statement).scalars().all()
+    total_count = db.execute(
+        select(func.count()).select_from(AuditEvent).where(*filters)
+    ).scalar_one()
+    return AuditEventListResponse(
+        items=[_audit_event_response(event) for event in items],
+        count=int(total_count),
+    )
 
 
 @router.get(
@@ -479,6 +732,15 @@ def cancel_task(
     task.completed_at = now
     task.updated_at = now
     db.add(task)
+    add_audit_event(
+        db,
+        org_id=task.org_id,
+        task_id=task.id,
+        actor_user_id=principal.user_id,
+        event_type="task.lifecycle.canceled",
+        event_payload={"status": task.status},
+        created_at=now,
+    )
     db.commit()
     db.refresh(task)
     log_event(

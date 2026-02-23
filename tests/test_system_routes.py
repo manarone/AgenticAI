@@ -1,17 +1,21 @@
 from datetime import timedelta
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from agenticai.db.models import (
     Approval,
     ApprovalDecision,
+    BypassMode,
     Organization,
     RiskTier,
+    RuntimeSetting,
     Task,
     TaskStatus,
     User,
+    UserPolicyOverride,
 )
 from tests.conftest import TEST_TASK_API_JWT_AUDIENCE, TEST_TASK_API_JWT_SECRET
 from tests.jwt_utils import make_task_api_jwt
@@ -75,6 +79,49 @@ def _create_approval_record(
         session.add(approval)
         session.commit()
         return task.id, approval.id
+
+
+def _set_org_bypass_policy(client, *, org_id: str, allowed: bool) -> None:
+    key = f"org.{org_id}.allow_user_bypass"
+    with Session(bind=client.app.state.db_engine) as session:
+        setting = session.get(RuntimeSetting, key)
+        if setting is None:
+            setting = RuntimeSetting(
+                key=key,
+                value="true" if allowed else "false",
+                description="Test org bypass policy",
+            )
+        else:
+            setting.value = "true" if allowed else "false"
+        session.add(setting)
+        session.commit()
+
+
+def _set_user_bypass_override(
+    client,
+    *,
+    org_id: str,
+    user_id: str,
+    bypass_mode: BypassMode,
+) -> None:
+    with Session(bind=client.app.state.db_engine) as session:
+        override = session.execute(
+            select(UserPolicyOverride).where(
+                UserPolicyOverride.org_id == org_id,
+                UserPolicyOverride.user_id == user_id,
+            )
+        )
+        override = override.scalar_one_or_none()
+        if override is None:
+            override = UserPolicyOverride(
+                org_id=org_id,
+                user_id=user_id,
+                bypass_mode=bypass_mode.value,
+            )
+        else:
+            override.bypass_mode = bypass_mode.value
+        session.add(override)
+        session.commit()
 
 
 def test_root(client) -> None:
@@ -760,3 +807,124 @@ def test_decide_approval_is_tenant_scoped(client, seeded_identity, task_api_head
             "message": f"Approval '{approval_id}' was not found",
         }
     }
+
+
+def test_update_bypass_mode_requires_org_policy_opt_in(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Bypass mode cannot be enabled unless org policy allows it."""
+    user_id = seeded_identity["requested_by_user_id"]
+    response = client.post(
+        f"/v1/users/{user_id}/bypass-mode",
+        headers=task_api_headers,
+        json={"bypass_mode": "ALL_RISK", "reason": "expedite"},
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "code": "ORG_POLICY_BYPASS_DISABLED",
+            "message": "Organization policy currently disallows user bypass overrides",
+        }
+    }
+
+
+def test_update_bypass_mode_enables_when_org_policy_allows(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Allowed org policy should persist and return effective bypass mode."""
+    org_id = seeded_identity["org_id"]
+    user_id = seeded_identity["requested_by_user_id"]
+    _set_org_bypass_policy(client, org_id=org_id, allowed=True)
+
+    response = client.post(
+        f"/v1/users/{user_id}/bypass-mode",
+        headers=task_api_headers,
+        json={"bypass_mode": "ALL_RISK", "reason": "oncall emergency"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["org_id"] == org_id
+    assert payload["user_id"] == user_id
+    assert payload["bypass_mode"] == "ALL_RISK"
+    assert payload["effective_bypass_mode"] == "ALL_RISK"
+    assert payload["org_bypass_allowed"] is True
+
+    audit_response = client.get(
+        "/v1/audit-events?event_type=policy.bypass.updated",
+        headers=task_api_headers,
+    )
+    assert audit_response.status_code == 200
+    assert audit_response.json()["count"] == 1
+    assert audit_response.json()["items"][0]["actor_user_id"] == user_id
+
+
+def test_update_bypass_mode_rejects_other_user_path(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Caller should not be able to update bypass mode for another user id."""
+    second_identity = _create_secondary_identity(client)
+    response = client.post(
+        f"/v1/users/{second_identity['requested_by_user_id']}/bypass-mode",
+        headers=task_api_headers,
+        json={"bypass_mode": "DISABLED"},
+    )
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": {
+            "code": "BYPASS_MODE_FORBIDDEN",
+            "message": "You may only update your own bypass mode",
+        }
+    }
+
+
+def test_list_audit_events_filters_and_tenant_scopes(
+    client,
+    seeded_identity,
+    task_api_headers,
+) -> None:
+    """Audit listing should expose org-scoped lifecycle events with filters."""
+    own_task = client.post(
+        "/v1/tasks",
+        headers=task_api_headers,
+        json={"prompt": "task for audit stream"},
+    )
+    assert own_task.status_code == 202
+    own_task_id = own_task.json()["task_id"]
+
+    cancel_response = client.post(f"/v1/tasks/{own_task_id}/cancel", headers=task_api_headers)
+    assert cancel_response.status_code == 200
+
+    second_identity = _create_secondary_identity(client)
+    second_token = make_task_api_jwt(
+        secret=TEST_TASK_API_JWT_SECRET,
+        audience=TEST_TASK_API_JWT_AUDIENCE,
+        sub=second_identity["requested_by_user_id"],
+        org_id=second_identity["org_id"],
+    )
+    second_headers = {"Authorization": f"Bearer {second_token}"}
+    second_task = client.post(
+        "/v1/tasks",
+        headers=second_headers,
+        json={"prompt": "task for other org"},
+    )
+    assert second_task.status_code == 202
+
+    events = client.get("/v1/audit-events", headers=task_api_headers)
+    assert events.status_code == 200
+    payload = events.json()
+    assert payload["count"] >= 3
+    assert {item["org_id"] for item in payload["items"]} == {seeded_identity["org_id"]}
+
+    canceled_only = client.get(
+        "/v1/audit-events?event_type=task.lifecycle.canceled",
+        headers=task_api_headers,
+    )
+    assert canceled_only.status_code == 200
+    assert canceled_only.json()["count"] == 1
+    assert canceled_only.json()["items"][0]["task_id"] == own_task_id
