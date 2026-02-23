@@ -151,6 +151,41 @@ def test_webhook_start_with_invite_registers_user(client) -> None:
     assert queued_messages == []
 
 
+def test_webhook_start_with_invite_truncates_overlong_display_name(client) -> None:
+    """Display names derived from Telegram payload should be bounded before persistence."""
+    new_org_id = str(uuid4())
+    with Session(bind=client.app.state.db_engine) as session:
+        session.add(Organization(id=new_org_id, slug="long-name-org", name="Long Name Org"))
+        session.commit()
+
+    telegram_user_id = 777888999
+    response = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json={
+            "update_id": 3005,
+            "message": {
+                "text": "/start long-name-org",
+                "from": {
+                    "id": telegram_user_id,
+                    "first_name": "A" * 400,
+                    "last_name": "B" * 400,
+                },
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "registered"
+
+    with Session(bind=client.app.state.db_engine) as session:
+        user = session.execute(
+            select(User).where(User.org_id == new_org_id, User.telegram_user_id == telegram_user_id)
+        ).scalar_one_or_none()
+    assert user is not None
+    assert user.display_name is not None
+    assert len(user.display_name) == 255
+
+
 def test_webhook_start_does_not_reassign_existing_telegram_user_to_new_org(client) -> None:
     """Existing Telegram users remain bound to their original org even with a new invite code."""
     second_org_id = str(uuid4())

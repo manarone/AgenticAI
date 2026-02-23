@@ -452,6 +452,26 @@ def test_create_task_invalid_payload(client, task_api_headers) -> None:
     assert too_large.status_code == 422
 
 
+def test_create_task_accepts_max_prompt_length(client, task_api_headers) -> None:
+    """Prompt length at the schema boundary should remain valid."""
+    response = client.post(
+        "/v1/tasks",
+        headers=task_api_headers,
+        json={"prompt": "x" * 8192},
+    )
+    assert response.status_code == 202
+
+
+def test_create_task_accepts_max_idempotency_key_length(client, task_api_headers) -> None:
+    """Idempotency key boundary value should be accepted."""
+    response = client.post(
+        "/v1/tasks",
+        headers={**task_api_headers, "Idempotency-Key": "k" * 128},
+        json={"prompt": "bounded key"},
+    )
+    assert response.status_code == 202
+
+
 def test_create_task_rejects_overlong_idempotency_key(client, task_api_headers) -> None:
     """Idempotency key should be bounded to match DB column constraints."""
     response = client.post(
