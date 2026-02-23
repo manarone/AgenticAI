@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 import logging
 import time
 from collections.abc import Awaitable
@@ -368,6 +369,23 @@ class CoordinatorWorker:
 
         execution_started_at = time.perf_counter()
         try:
+            await asyncio.to_thread(
+                self._mark_execution_started,
+                handoff.task_id,
+                handoff.approved_resume,
+            )
+        except Exception:
+            logger.exception("Failed to mark execution as started for task %s", handoff.task_id)
+            await asyncio.to_thread(
+                self._finalize_task,
+                handoff.task_id,
+                ExecutionResult(
+                    success=False,
+                    error_message="Failed to persist execution start metadata",
+                ),
+            )
+            return
+        try:
             result = await self._execute_handoff(handoff)
         except Exception:
             logger.exception("Planner/executor handoff failed for task %s", handoff.task_id)
@@ -432,6 +450,36 @@ class CoordinatorWorker:
         """Resolve effective bypass mode after applying org policy constraints."""
         with self._session_factory() as session:
             return resolve_effective_bypass_mode(session, org_id=org_id, user_id=user_id)
+
+    def _mark_execution_started(self, task_id: str, approved_resume: bool) -> None:
+        """Persist execution backend metadata before adapter handoff begins."""
+        with self._session_factory() as session:
+            task = session.get(Task, task_id)
+            if task is None:
+                return
+            if task.status != TaskStatus.RUNNING.value:
+                return
+            now = datetime.now(UTC)
+            task.execution_backend = str(getattr(self._adapter, "backend_name", "noop"))
+            current_attempts = int(task.execution_attempts or 0)
+            task.execution_attempts = current_attempts + 1
+            task.execution_last_heartbeat_at = now
+            task.execution_metadata = json.dumps({"approved_resume": approved_resume})
+            task.updated_at = now
+            session.add(task)
+            add_audit_event(
+                session,
+                org_id=task.org_id,
+                task_id=task.id,
+                actor_user_id=task.requested_by_user_id,
+                event_type="task.execution.started",
+                event_payload={
+                    "execution_backend": task.execution_backend,
+                    "execution_attempts": task.execution_attempts,
+                },
+                created_at=now,
+            )
+            session.commit()
 
     def _record_task_risk(
         self,
@@ -644,6 +692,7 @@ class CoordinatorWorker:
             task.status = final_status
             task.error_message = None if result.success else result.error_message
             task.completed_at = now
+            task.execution_last_heartbeat_at = now
             task.updated_at = now
             session.add(task)
             add_audit_event(

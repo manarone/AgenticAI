@@ -80,6 +80,32 @@ class Settings(BaseSettings):
         validation_alias="COORDINATOR_BATCH_SIZE",
         ge=1,
     )
+    execution_runtime_backend: str = Field(
+        default="noop",
+        validation_alias="EXECUTION_RUNTIME_BACKEND",
+    )
+    execution_runtime_timeout_seconds: float = Field(
+        default=300.0,
+        validation_alias="EXECUTION_RUNTIME_TIMEOUT_SECONDS",
+        gt=0,
+    )
+    execution_docker_image: str = Field(
+        default="python:3.12-slim",
+        validation_alias="EXECUTION_DOCKER_IMAGE",
+    )
+    execution_docker_memory_limit: str = Field(
+        default="512m",
+        validation_alias="EXECUTION_DOCKER_MEMORY_LIMIT",
+    )
+    execution_docker_nano_cpus: int = Field(
+        default=500_000_000,
+        validation_alias="EXECUTION_DOCKER_NANO_CPUS",
+        ge=1,
+    )
+    execution_docker_allow_fallback: bool = Field(
+        default=False,
+        validation_alias="EXECUTION_DOCKER_ALLOW_FALLBACK",
+    )
     task_recovery_scan_interval_seconds: float = Field(
         default=30.0,
         validation_alias="TASK_RECOVERY_SCAN_INTERVAL_SECONDS",
@@ -122,6 +148,12 @@ class Settings(BaseSettings):
         """Normalize JWT algorithm for stable comparisons."""
         return str(value).upper()
 
+    @field_validator("execution_runtime_backend", mode="before")
+    @classmethod
+    def normalize_execution_runtime_backend(cls, value: str) -> str:
+        """Normalize runtime backend values for stable comparisons."""
+        return str(value).lower()
+
     @model_validator(mode="after")
     def validate_backends(self) -> "Settings":
         """Validate backend compatibility for the current scaffold."""
@@ -130,6 +162,7 @@ class Settings(BaseSettings):
         database_url = self.database_url.get_secret_value().strip().lower()
 
         supported_backends = {"inmemory", "redis"}
+        supported_execution_runtimes = {"noop", "docker"}
         supported_task_api_jwt_algorithms = {"HS256"}
         if self.bus_backend not in supported_backends:
             options = ", ".join(sorted(supported_backends))
@@ -141,6 +174,11 @@ class Settings(BaseSettings):
             raise ValueError(f"TASK_API_JWT_ALGORITHM must be one of: {options}")
         if not self.task_api_jwt_audience.strip():
             raise ValueError("TASK_API_JWT_AUDIENCE must not be blank")
+        if self.execution_runtime_backend not in supported_execution_runtimes:
+            options = ", ".join(sorted(supported_execution_runtimes))
+            raise ValueError(f"EXECUTION_RUNTIME_BACKEND must be one of: {options}")
+        if self.execution_runtime_backend == "docker" and not self.execution_docker_image.strip():
+            raise ValueError("EXECUTION_DOCKER_IMAGE must not be blank")
         if non_local_environment:
             if database_url.startswith("sqlite"):
                 raise ValueError("DATABASE_URL must not use sqlite outside development/local/test")
