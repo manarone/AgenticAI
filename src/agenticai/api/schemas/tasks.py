@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from agenticai.db.models import ApprovalDecision, RiskTier, TaskStatus
+from agenticai.db.models import ApprovalDecision, BypassMode, RiskTier, TaskStatus
 
 
 class TaskCreateRequest(BaseModel):
@@ -66,6 +66,47 @@ class ApprovalListResponse(BaseModel):
     """Response payload for approval list queries."""
 
     items: list[ApprovalResponse]
+    count: int
+
+
+class BypassModeUpdateRequest(BaseModel):
+    """Payload accepted by bypass mode update endpoint."""
+
+    bypass_mode: BypassMode
+    reason: str | None = Field(default=None, max_length=2048)
+    expires_at: datetime | None = None
+
+
+class BypassModeResponse(BaseModel):
+    """User bypass mode state after org policy enforcement."""
+
+    user_id: str
+    org_id: str
+    bypass_mode: BypassMode
+    effective_bypass_mode: BypassMode
+    org_bypass_allowed: bool
+    reason: str | None
+    expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuditEventResponse(BaseModel):
+    """Audit event payload returned by query endpoint."""
+
+    audit_event_id: str
+    org_id: str
+    task_id: str | None
+    actor_user_id: str | None
+    event_type: str
+    event_payload: dict[str, object] | None
+    created_at: datetime
+
+
+class AuditEventListResponse(BaseModel):
+    """Paginated response payload for audit event queries."""
+
+    items: list[AuditEventResponse]
     count: int
 
 

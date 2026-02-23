@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agenticai.coordinator import (
@@ -17,7 +18,15 @@ from agenticai.coordinator import (
 )
 from agenticai.core.config import get_settings
 from agenticai.db.base import Base
-from agenticai.db.models import Organization, Task, TaskStatus, User
+from agenticai.db.models import (
+    BypassMode,
+    Organization,
+    RuntimeSetting,
+    Task,
+    TaskStatus,
+    User,
+    UserPolicyOverride,
+)
 from agenticai.db.session import build_engine
 from agenticai.main import create_app
 from tests.jwt_utils import make_task_api_jwt
@@ -186,6 +195,42 @@ def _wait_for_approval(
             return payload["items"][0]
         time.sleep(0.02)
     pytest.fail("Timed out waiting for approval record")
+
+
+def _set_org_bypass_policy(client: TestClient, *, allowed: bool) -> None:
+    key = f"org.{TEST_ORG_ID}.allow_user_bypass"
+    with Session(bind=client.app.state.db_engine) as session:
+        setting = session.get(RuntimeSetting, key)
+        if setting is None:
+            setting = RuntimeSetting(
+                key=key,
+                value="true" if allowed else "false",
+                description="Test bypass policy",
+            )
+        else:
+            setting.value = "true" if allowed else "false"
+        session.add(setting)
+        session.commit()
+
+
+def _set_user_bypass_override(client: TestClient, *, bypass_mode: BypassMode) -> None:
+    with Session(bind=client.app.state.db_engine) as session:
+        override = session.execute(
+            select(UserPolicyOverride).where(
+                UserPolicyOverride.org_id == TEST_ORG_ID,
+                UserPolicyOverride.user_id == TEST_USER_ID,
+            )
+        ).scalar_one_or_none()
+        if override is None:
+            override = UserPolicyOverride(
+                org_id=TEST_ORG_ID,
+                user_id=TEST_USER_ID,
+                bypass_mode=bypass_mode.value,
+            )
+        else:
+            override.bypass_mode = bypass_mode.value
+        session.add(override)
+        session.commit()
 
 
 def test_coordinator_transitions_task_to_succeeded(
@@ -425,3 +470,67 @@ def test_coordinator_denied_approval_marks_task_failed(
         assert payload["approval_decision"] == "DENIED"
         assert payload["error_message"] == "Unsafe request"
         assert adapter.completed_calls == 0
+
+
+def test_coordinator_bypass_all_risk_skips_approval_pause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ALL_RISK bypass should execute risky tasks without WAITING_APPROVAL."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        _set_org_bypass_policy(client, allowed=True)
+        _set_user_bypass_override(client, bypass_mode=BypassMode.ALL_RISK)
+
+        task_id = _create_task(client, "delete production cache entries")
+        payload = _wait_for_status(client, task_id, "SUCCEEDED")
+        assert payload["risk_tier"] == "HIGH"
+        assert payload["approval_required"] is False
+        assert adapter.completed_calls == 1
+
+        approvals_response = client.get("/v1/approvals", headers=_task_api_headers())
+        assert approvals_response.status_code == 200
+        assert approvals_response.json()["count"] == 0
+
+
+def test_org_policy_disallow_overrides_user_bypass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Org policy should force approval even when user override requests bypass."""
+    adapter = CountingAdapter()
+    with _coordinator_client(monkeypatch, tmp_path, adapter=adapter) as client:
+        _set_org_bypass_policy(client, allowed=False)
+        _set_user_bypass_override(client, bypass_mode=BypassMode.ALL_RISK)
+
+        task_id = _create_task(client, "delete production pipeline")
+        payload = _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        assert payload["approval_required"] is True
+        assert payload["approval_decision"] == "PENDING"
+        assert adapter.completed_calls == 0
+
+
+def test_audit_events_capture_critical_approval_transitions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Risk pause and deny decision should be visible in audit event stream."""
+    with _coordinator_client(monkeypatch, tmp_path, adapter=CountingAdapter()) as client:
+        task_id = _create_task(client, "delete production user data")
+        _wait_for_status(client, task_id, "WAITING_APPROVAL")
+        approval = _wait_for_approval(client)
+
+        deny_response = client.post(
+            f"/v1/approvals/{approval['approval_id']}/decision",
+            headers=_task_api_headers(),
+            json={"decision": "DENIED", "reason": "Policy violation"},
+        )
+        assert deny_response.status_code == 200
+        _wait_for_status(client, task_id, "FAILED")
+
+        events_response = client.get(
+            f"/v1/audit-events?task_id={task_id}",
+            headers=_task_api_headers(),
+        )
+        assert events_response.status_code == 200
+        event_types = {item["event_type"] for item in events_response.json()["items"]}
+        assert "task.lifecycle.waiting_approval" in event_types
+        assert "approval.decision.denied" in event_types
+        assert "task.lifecycle.failed" in event_types
