@@ -47,7 +47,8 @@ def _normalize_request_id(raw_value: str | None) -> str | None:
     """Normalize untrusted request-id header value into a bounded token."""
     if raw_value is None:
         return None
-    normalized = raw_value.strip()
+    filtered = "".join(ch for ch in raw_value if 0x21 <= ord(ch) <= 0x7E)
+    normalized = filtered.strip()
     if not normalized:
         return None
     if len(normalized) > MAX_REQUEST_ID_LENGTH:

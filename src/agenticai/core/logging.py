@@ -42,12 +42,12 @@ def configure_logging(level: str) -> None:
                     "class": "logging.StreamHandler",
                     "formatter": "default",
                     "stream": "ext://sys.stdout",
-                    "filters": ["request_id"],
                 }
             },
             "root": {
                 "level": normalized_level,
                 "handlers": ["console"],
+                "filters": ["request_id"],
             },
         }
     )

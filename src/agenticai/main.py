@@ -147,7 +147,6 @@ def create_app(
         redoc_url="/redoc" if is_local_environment else None,
         openapi_url="/openapi.json" if is_local_environment else None,
     )
-    app.add_middleware(RequestCorrelationMiddleware)
     app.add_middleware(
         EndpointRateLimitMiddleware,
         enabled=settings.enable_rate_limiting,
@@ -170,6 +169,7 @@ def create_app(
             ),
         ),
     )
+    app.add_middleware(RequestCorrelationMiddleware)
     app.include_router(api_router)
 
     @app.get("/", tags=["meta"])

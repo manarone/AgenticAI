@@ -1,5 +1,5 @@
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -145,6 +145,15 @@ def test_healthz_echoes_request_id_header(client) -> None:
     response = client.get("/healthz", headers={"X-Request-ID": "req-health-001"})
     assert response.status_code == 200
     assert response.headers.get("X-Request-ID") == "req-health-001"
+
+
+def test_healthz_generates_uuid_request_id_when_absent(client) -> None:
+    """Missing request IDs should be generated and returned to clients."""
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    request_id = response.headers.get("X-Request-ID")
+    assert request_id is not None
+    UUID(request_id)
 
 
 def test_readyz(client) -> None:

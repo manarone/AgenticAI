@@ -26,6 +26,7 @@ RUN groupadd --system appgroup && \
 EXPOSE 8000
 
 # Docker backend requires mounted docker socket access at runtime.
+# Temporary: fallback stays enabled until socket wiring is validated in Coolify.
 ENV HOST=0.0.0.0 \
     PORT=8000 \
     BUS_BACKEND=inmemory \
