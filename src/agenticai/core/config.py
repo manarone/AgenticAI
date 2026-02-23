@@ -26,6 +26,30 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="BUS_REDIS_FALLBACK_TO_INMEMORY",
     )
+    enable_rate_limiting: bool = Field(
+        default=False,
+        validation_alias="ENABLE_RATE_LIMITING",
+    )
+    telegram_webhook_rate_limit_requests: int = Field(
+        default=60,
+        validation_alias="TELEGRAM_WEBHOOK_RATE_LIMIT_REQUESTS",
+        ge=1,
+    )
+    telegram_webhook_rate_limit_window_seconds: float = Field(
+        default=60.0,
+        validation_alias="TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS",
+        gt=0,
+    )
+    task_create_rate_limit_requests: int = Field(
+        default=30,
+        validation_alias="TASK_CREATE_RATE_LIMIT_REQUESTS",
+        ge=1,
+    )
+    task_create_rate_limit_window_seconds: float = Field(
+        default=60.0,
+        validation_alias="TASK_CREATE_RATE_LIMIT_WINDOW_SECONDS",
+        gt=0,
+    )
     task_api_auth_token: SecretStr | None = Field(
         default=None,
         validation_alias="TASK_API_AUTH_TOKEN",

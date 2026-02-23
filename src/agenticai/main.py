@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.exc import SQLAlchemyError
 
+from agenticai.api.middleware import EndpointRateLimitMiddleware, RateLimitRule
 from agenticai.api.router import api_router
 from agenticai.bus.exceptions import BUS_EXCEPTIONS
 from agenticai.bus.factory import create_bus
@@ -105,6 +106,29 @@ def create_app(
         docs_url="/docs" if is_local_environment else None,
         redoc_url="/redoc" if is_local_environment else None,
         openapi_url="/openapi.json" if is_local_environment else None,
+    )
+    app.add_middleware(
+        EndpointRateLimitMiddleware,
+        enabled=settings.enable_rate_limiting,
+        rules=(
+            RateLimitRule(
+                method="POST",
+                path="/telegram/webhook",
+                max_requests=settings.telegram_webhook_rate_limit_requests,
+                window_seconds=settings.telegram_webhook_rate_limit_window_seconds,
+                error_code="TELEGRAM_WEBHOOK_RATE_LIMITED",
+                error_message="Too many Telegram webhook requests",
+            ),
+            RateLimitRule(
+                method="POST",
+                path="/v1/tasks",
+                max_requests=settings.task_create_rate_limit_requests,
+                window_seconds=settings.task_create_rate_limit_window_seconds,
+                error_code="TASK_CREATE_RATE_LIMITED",
+                error_message="Too many task creation requests",
+                identity_header="X-Actor-User-Id",
+            ),
+        ),
     )
     app.include_router(api_router)
 
