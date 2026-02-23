@@ -1,6 +1,7 @@
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
@@ -39,6 +40,7 @@ TERMINAL_STATUSES = {
     TaskStatus.TIMED_OUT.value,
 }
 MAX_TASK_LIST_LIMIT = 100
+MAX_IDEMPOTENCY_KEY_LENGTH = 128
 
 
 def _task_response(task: Task) -> TaskResponse:
@@ -128,6 +130,12 @@ def create_task(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 code="TASK_CREATE_INVALID_IDEMPOTENCY_KEY",
                 message="Idempotency-Key cannot be blank",
+            )
+        if len(normalized_idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH:
+            return build_error_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                code="TASK_CREATE_INVALID_IDEMPOTENCY_KEY",
+                message=f"Idempotency-Key cannot exceed {MAX_IDEMPOTENCY_KEY_LENGTH} characters",
             )
         existing_task = db.execute(
             select(Task).where(
@@ -229,14 +237,15 @@ def create_task(
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
 )
 def get_task(
-    task_id: str,
+    task_id: UUID,
     db: DBSession,
     principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
 ) -> TaskResponse | JSONResponse:
     """Fetch a task by id."""
+    task_id_str = str(task_id)
     task = db.execute(
         select(Task).where(
-            Task.id == task_id,
+            Task.id == task_id_str,
             Task.org_id == principal.org_id,
         )
     ).scalar_one_or_none()
@@ -244,7 +253,7 @@ def get_task(
         return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,
             code="TASK_NOT_FOUND",
-            message=f"Task '{task_id}' was not found",
+            message=f"Task '{task_id_str}' was not found",
         )
     return _task_response(task)
 
@@ -259,14 +268,15 @@ def get_task(
     },
 )
 def cancel_task(
-    task_id: str,
+    task_id: UUID,
     db: DBSession,
     principal: Annotated[TaskApiPrincipal, Depends(get_task_api_principal)],
 ) -> TaskResponse | JSONResponse:
     """Cancel a task when it is not terminal."""
+    task_id_str = str(task_id)
     task = db.execute(
         select(Task).where(
-            Task.id == task_id,
+            Task.id == task_id_str,
             Task.org_id == principal.org_id,
         )
     ).scalar_one_or_none()
@@ -274,7 +284,7 @@ def cancel_task(
         return build_error_response(
             status_code=status.HTTP_404_NOT_FOUND,
             code="TASK_NOT_FOUND",
-            message=f"Task '{task_id}' was not found",
+            message=f"Task '{task_id_str}' was not found",
         )
 
     if task.status in TERMINAL_STATUSES:
@@ -283,7 +293,7 @@ def cancel_task(
         return build_error_response(
             status_code=status.HTTP_409_CONFLICT,
             code="TASK_NOT_CANCELABLE",
-            message=f"Task '{task_id}' is already terminal ({task.status})",
+            message=f"Task '{task_id_str}' is already terminal ({task.status})",
         )
 
     now = datetime.now(UTC)

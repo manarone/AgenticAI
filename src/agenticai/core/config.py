@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="TASK_API_AUTH_TOKEN",
     )
+    task_api_actor_hmac_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="TASK_API_ACTOR_HMAC_SECRET",
+    )
     allow_insecure_task_api: bool = Field(
         default=False,
         validation_alias="ALLOW_INSECURE_TASK_API",
@@ -91,6 +95,7 @@ class Settings(BaseSettings):
         """Validate backend compatibility for the current scaffold."""
         environment = self.environment.strip().lower()
         non_local_environment = environment not in {"development", "dev", "local", "test"}
+        database_url = self.database_url.get_secret_value().strip().lower()
 
         supported_backends = {"inmemory", "redis"}
         if self.bus_backend not in supported_backends:
@@ -99,6 +104,10 @@ class Settings(BaseSettings):
         if self.bus_backend == "redis" and not self.redis_url:
             raise ValueError("REDIS_URL is required when BUS_BACKEND=redis")
         if non_local_environment:
+            if database_url.startswith("sqlite"):
+                raise ValueError(
+                    "DATABASE_URL must not use sqlite outside development/local/test"
+                )
             if self.telegram_webhook_secret is None and not self.allow_insecure_telegram_webhook:
                 raise ValueError(
                     "TELEGRAM_WEBHOOK_SECRET is required outside development/local/test unless "
@@ -108,6 +117,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "TASK_API_AUTH_TOKEN is required outside development/local/test unless "
                     "ALLOW_INSECURE_TASK_API=true"
+                )
+            if self.task_api_auth_token is not None and self.task_api_actor_hmac_secret is None:
+                raise ValueError(
+                    "TASK_API_ACTOR_HMAC_SECRET is required outside development/local/test when "
+                    "TASK_API_AUTH_TOKEN is configured"
                 )
 
         return self

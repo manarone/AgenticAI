@@ -119,9 +119,11 @@ def test_create_bus_runtime_failover_switches_to_inmemory(monkeypatch: MonkeyPat
 def test_settings_require_webhook_secret_in_production(monkeypatch: MonkeyPatch) -> None:
     """Production environment should fail closed when webhook secret is absent."""
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
     monkeypatch.delenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", raising=False)
     monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
     get_settings.cache_clear()
     with pytest.raises(ValueError) as excinfo:
         Settings()
@@ -131,9 +133,11 @@ def test_settings_require_webhook_secret_in_production(monkeypatch: MonkeyPatch)
 def test_settings_allow_insecure_webhook_override_in_production(monkeypatch: MonkeyPatch) -> None:
     """Production can explicitly opt into insecure webhook mode when required."""
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
     monkeypatch.setenv("ALLOW_INSECURE_TELEGRAM_WEBHOOK", "true")
     monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
     get_settings.cache_clear()
     settings = Settings()
     assert settings.allow_insecure_telegram_webhook is True
@@ -142,6 +146,7 @@ def test_settings_allow_insecure_webhook_override_in_production(monkeypatch: Mon
 def test_settings_require_task_api_token_in_production(monkeypatch: MonkeyPatch) -> None:
     """Production environment should fail closed when task API token is absent."""
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
     monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("ALLOW_INSECURE_TASK_API", raising=False)
@@ -154,9 +159,39 @@ def test_settings_require_task_api_token_in_production(monkeypatch: MonkeyPatch)
 def test_settings_allow_insecure_task_api_override_in_production(monkeypatch: MonkeyPatch) -> None:
     """Production can explicitly opt into insecure task API mode when required."""
     monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
     monkeypatch.delenv("TASK_API_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("ALLOW_INSECURE_TASK_API", "true")
     get_settings.cache_clear()
     settings = Settings()
     assert settings.allow_insecure_task_api is True
+
+
+def test_settings_require_actor_hmac_secret_in_production_when_task_api_token_set(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Production should require actor-signature secret for task API identity binding."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/agenticai")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    monkeypatch.delenv("TASK_API_ACTOR_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_TASK_API", raising=False)
+    get_settings.cache_clear()
+    with pytest.raises(ValueError) as excinfo:
+        Settings()
+    assert "TASK_API_ACTOR_HMAC_SECRET is required" in str(excinfo.value)
+
+
+def test_settings_reject_sqlite_in_production(monkeypatch: MonkeyPatch) -> None:
+    """Production should not allow SQLite-backed deployments."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./agenticai.db")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+    monkeypatch.setenv("TASK_API_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TASK_API_ACTOR_HMAC_SECRET", "actor-secret")
+    get_settings.cache_clear()
+    with pytest.raises(ValueError) as excinfo:
+        Settings()
+    assert "DATABASE_URL must not use sqlite" in str(excinfo.value)

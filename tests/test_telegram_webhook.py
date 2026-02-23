@@ -291,3 +291,13 @@ def test_webhook_duplicate_recovers_previous_enqueue_failure(client) -> None:
     queued_messages = client.app.state.bus.dequeue(TASK_QUEUE, limit=10)
     assert len(queued_messages) == 1
     assert queued_messages[0]["job_id"] == duplicate_payload["task_id"]
+
+
+def test_webhook_rejects_overlong_message_text(client) -> None:
+    """Webhook payload text should be bounded to prevent oversized requests."""
+    response = client.post(
+        WEBHOOK_PATH,
+        headers=WEBHOOK_SECRET_HEADER,
+        json=_message_update(update_id=6001, telegram_user_id=123456789, text="x" * 9000),
+    )
+    assert response.status_code == 422

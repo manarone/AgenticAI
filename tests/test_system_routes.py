@@ -1,5 +1,7 @@
+import hmac
 from uuid import uuid4
 
+from pydantic import SecretStr
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -63,6 +65,20 @@ def test_readyz(client) -> None:
 def test_readyz_not_ready_without_bus(client) -> None:
     """Readiness returns 503 when the bus is unavailable."""
     delattr(client.app.state, "bus")
+
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "configured_bus_backend": "inmemory",
+        "effective_bus_backend": "inmemory",
+    }
+
+
+def test_readyz_not_ready_when_coordinator_required_but_not_running(client) -> None:
+    """Readiness should fail when task processing loop is required but unavailable."""
+    client.app.state.coordinator_required = True
+    client.app.state.coordinator = None
 
     response = client.get("/readyz")
     assert response.status_code == 503
@@ -151,6 +167,53 @@ def test_task_routes_require_authentication(client) -> None:
     """Task APIs reject unauthenticated callers."""
     response = client.get("/v1/tasks")
     assert response.status_code == 401
+
+
+def test_task_routes_reject_non_uuid_actor_header(client, task_api_headers) -> None:
+    """Task APIs should reject malformed actor identifiers before DB lookup."""
+    response = client.get(
+        "/v1/tasks",
+        headers={**task_api_headers, "X-Actor-User-Id": "not-a-uuid"},
+    )
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": {
+            "code": "TASK_API_UNAUTHORIZED",
+            "message": "X-Actor-User-Id must be a valid UUID",
+        }
+    }
+
+
+def test_task_routes_require_actor_signature_when_configured(client, task_api_headers) -> None:
+    """When actor signing secret is configured, requests must include a valid signature."""
+    actor_id = task_api_headers["X-Actor-User-Id"]
+    client.app.state.settings.task_api_actor_hmac_secret = SecretStr("actor-signing-secret")
+
+    missing_signature = client.get("/v1/tasks", headers=task_api_headers)
+    assert missing_signature.status_code == 401
+    assert missing_signature.json() == {
+        "detail": {
+            "code": "TASK_API_UNAUTHORIZED",
+            "message": "Invalid or missing X-Actor-Signature header",
+        }
+    }
+
+    invalid_signature = client.get(
+        "/v1/tasks",
+        headers={**task_api_headers, "X-Actor-Signature": "sha256=bad-signature"},
+    )
+    assert invalid_signature.status_code == 401
+
+    signature = hmac.new(
+        b"actor-signing-secret",
+        actor_id.encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    valid_response = client.get(
+        "/v1/tasks",
+        headers={**task_api_headers, "X-Actor-Signature": f"sha256={signature}"},
+    )
+    assert valid_response.status_code == 200
 
 
 def test_list_tasks(client, task_api_headers) -> None:
@@ -370,6 +433,29 @@ def test_create_task_invalid_payload(client, task_api_headers) -> None:
     response = client.post("/v1/tasks", headers=task_api_headers, json={"prompt": ""})
     assert response.status_code == 422
 
+    too_large = client.post(
+        "/v1/tasks",
+        headers=task_api_headers,
+        json={"prompt": "x" * 9000},
+    )
+    assert too_large.status_code == 422
+
+
+def test_create_task_rejects_overlong_idempotency_key(client, task_api_headers) -> None:
+    """Idempotency key should be bounded to match DB column constraints."""
+    response = client.post(
+        "/v1/tasks",
+        headers={**task_api_headers, "Idempotency-Key": "k" * 129},
+        json={"prompt": "bounded key"},
+    )
+    assert response.status_code == 400
+    assert response.json() == {
+        "error": {
+            "code": "TASK_CREATE_INVALID_IDEMPOTENCY_KEY",
+            "message": "Idempotency-Key cannot exceed 128 characters",
+        }
+    }
+
 
 def test_get_unknown_task_returns_structured_404(client, task_api_headers) -> None:
     """Unknown task ids return typed error payloads."""
@@ -384,6 +470,12 @@ def test_get_unknown_task_returns_structured_404(client, task_api_headers) -> No
     }
 
 
+def test_get_task_rejects_invalid_uuid_path_param(client, task_api_headers) -> None:
+    """Task id path params should be UUID-validated at the framework boundary."""
+    response = client.get("/v1/tasks/not-a-uuid", headers=task_api_headers)
+    assert response.status_code == 422
+
+
 def test_cancel_unknown_task_returns_structured_404(client, task_api_headers) -> None:
     """Unknown task ids are not cancelable and return typed errors."""
     missing_id = str(uuid4())
@@ -395,6 +487,12 @@ def test_cancel_unknown_task_returns_structured_404(client, task_api_headers) ->
             "message": f"Task '{missing_id}' was not found",
         }
     }
+
+
+def test_cancel_task_rejects_invalid_uuid_path_param(client, task_api_headers) -> None:
+    """Cancel endpoint should enforce UUID path params."""
+    response = client.post("/v1/tasks/not-a-uuid/cancel", headers=task_api_headers)
+    assert response.status_code == 422
 
 
 def test_task_access_is_tenant_scoped(client, task_api_headers) -> None:
