@@ -3,13 +3,10 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from agenticai.core.config import get_settings
-from agenticai.db.base import Base
-from agenticai.db.models import Organization, User
-from agenticai.db.session import build_engine
 from agenticai.main import create_app
+from tests.db_seed import seed_identity_database
 
 TEST_ORG_ID = "00000000-0000-0000-0000-000000000901"
 TEST_USER_ID = "00000000-0000-0000-0000-000000000902"
@@ -35,26 +32,15 @@ def rate_limited_client(
     monkeypatch.setenv("TELEGRAM_WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60")
     get_settings.cache_clear()
 
-    engine = build_engine(database_url)
-    Base.metadata.create_all(bind=engine)
-    with Session(bind=engine) as session:
-        session.add(
-            Organization(
-                id=TEST_ORG_ID,
-                slug="policy-test-org",
-                name="Policy Test Org",
-            )
-        )
-        session.add(
-            User(
-                id=TEST_USER_ID,
-                org_id=TEST_ORG_ID,
-                telegram_user_id=123456789,
-                display_name="Policy Tester",
-            )
-        )
-        session.commit()
-    engine.dispose()
+    seed_identity_database(
+        database_url,
+        org_id=TEST_ORG_ID,
+        org_slug="policy-test-org",
+        org_name="Policy Test Org",
+        user_id=TEST_USER_ID,
+        telegram_user_id=123456789,
+        display_name="Policy Tester",
+    )
 
     with TestClient(create_app(start_coordinator=False)) as client:
         yield client

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
         validation_alias="BUS_REDIS_FALLBACK_TO_INMEMORY",
     )
     enable_rate_limiting: bool = Field(
-        default=True,
+        default=False,
         validation_alias="ENABLE_RATE_LIMITING",
     )
     telegram_webhook_rate_limit_requests: int = Field(
