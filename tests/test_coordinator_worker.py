@@ -96,6 +96,7 @@ def _coordinator_client(
     monkeypatch.setenv("TASK_API_JWT_AUDIENCE", TEST_TASK_API_JWT_AUDIENCE)
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
+    monkeypatch.setenv("EXECUTION_RUNTIME_BACKEND", "noop")
     get_settings.cache_clear()
 
     engine = build_engine(database_url)

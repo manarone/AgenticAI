@@ -45,6 +45,7 @@ def track_a_client(
     monkeypatch.setenv("COORDINATOR_POLL_INTERVAL_SECONDS", "0.01")
     monkeypatch.setenv("COORDINATOR_BATCH_SIZE", "10")
     monkeypatch.setenv("BUS_BACKEND", "inmemory")
+    monkeypatch.setenv("EXECUTION_RUNTIME_BACKEND", "noop")
     monkeypatch.setenv("TASK_API_JWT_SECRET", TRACK_A_TASK_API_JWT_SECRET)
     monkeypatch.setenv("TASK_API_JWT_AUDIENCE", TRACK_A_TASK_API_JWT_AUDIENCE)
     get_settings.cache_clear()
